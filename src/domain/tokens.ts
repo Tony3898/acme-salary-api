@@ -1,6 +1,7 @@
 import { createHash, randomBytes } from 'node:crypto';
 import jwt from 'jsonwebtoken';
 import { z } from 'zod';
+import { isScopedRole, ROLES, type Role } from './roles';
 
 /**
  * Tokens, as pure functions. The secret is passed in rather than read from
@@ -22,12 +23,6 @@ export const ACCESS_TOKEN_ALGORITHM = 'HS256' as const;
 const SECONDS_PER_MINUTE = 60;
 const REFRESH_TOKEN_BYTES = 32;
 
-export const ROLES = ['HR_ADMIN', 'HR_VIEWER', 'MANAGER', 'EMPLOYEE'] as const;
-export type Role = (typeof ROLES)[number];
-
-/** Roles whose visibility depends on which employee the login belongs to. */
-export const SCOPED_ROLES: readonly Role[] = ['MANAGER', 'EMPLOYEE'];
-
 export interface AccessTokenClaims {
   userId: number;
   role: Role;
@@ -48,7 +43,7 @@ const claimsSchema = z
     exp: z.number({ message: 'Token has no expiry.' }),
     iat: z.number(),
   })
-  .refine((claims) => !SCOPED_ROLES.includes(claims.role) || claims.employeeId !== null, {
+  .refine((claims) => !isScopedRole(claims.role) || claims.employeeId !== null, {
     message: 'A scoped role must name an employee.',
   });
 

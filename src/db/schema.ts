@@ -16,6 +16,7 @@ import {
   type AnyPgColumn,
 } from 'drizzle-orm/pg-core';
 import { MAX_AMOUNT_MINOR, SUPPORTED_CURRENCIES } from '../domain/money';
+import { ROLES } from '../domain/roles';
 
 /**
  * Conventions used throughout:
@@ -40,7 +41,8 @@ export const employeeStatusEnum = pgEnum('employee_status', ['ACTIVE', 'LEFT']);
 /** NULL means not recorded, which is distinct from OTHER. */
 export const genderEnum = pgEnum('gender', ['FEMALE', 'MALE', 'OTHER']);
 
-export const userRoleEnum = pgEnum('user_role', ['HR_ADMIN', 'HR_VIEWER', 'MANAGER', 'EMPLOYEE']);
+/** From the domain, so a role the code knows and the database rejects cannot exist. */
+export const userRoleEnum = pgEnum('user_role', ROLES);
 
 export const departments = pgTable('departments', {
   id: serial('id').primaryKey(),
@@ -197,6 +199,20 @@ export const users = pgTable(
 );
 
 /**
+ * Why a refresh token stopped being usable.
+ *
+ * The distinction matters when a dead token is presented again. One that was
+ * rotated should not be in anybody's hands, so a replay is a theft signal. One
+ * the user logged out of is expected to be replayed — a background tab retrying
+ * after another tab signed out — and must not end that person's other sessions.
+ */
+export const refreshTokenRevocationEnum = pgEnum('refresh_token_revocation', [
+  'ROTATED',
+  'LOGGED_OUT',
+  'REUSE_DETECTED',
+]);
+
+/**
  * Refresh tokens are stored hashed, so a database leak cannot be replayed as a
  * session. `revokedAt` is what makes logout end the session rather than merely
  * dropping the cookie.
@@ -211,7 +227,16 @@ export const refreshTokens = pgTable(
     tokenHash: text('token_hash').notNull().unique(),
     expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
     revokedAt: timestamp('revoked_at', { withTimezone: true }),
+    revokedReason: refreshTokenRevocationEnum('revoked_reason'),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   },
-  (table) => [index('refresh_tokens_user_idx').on(table.userId)],
+  (table) => [
+    index('refresh_tokens_user_idx').on(table.userId),
+    /* Both or neither. A revoked token with no reason would make the replay check
+       fall through to its safest branch for the wrong reason. */
+    check(
+      'refresh_token_revocation_complete',
+      sql`(${table.revokedAt} IS NULL) = (${table.revokedReason} IS NULL)`,
+    ),
+  ],
 );

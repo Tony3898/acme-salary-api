@@ -1,10 +1,15 @@
-import { drizzle } from 'drizzle-orm/node-postgres';
+import { drizzle, type NodePgDatabase } from 'drizzle-orm/node-postgres';
 import { Pool, types } from 'pg';
-import { config } from '../config';
+import type { DatabaseHandle } from './database';
 import * as schema from './schema';
 
 /** Postgres OID for bigint. */
 const PG_INT8 = 20;
+
+/** One pool holds up to this many server connections. */
+const MAX_POOL_CLIENTS = 10;
+const IDLE_TIMEOUT_MS = 30_000;
+const CONNECTION_TIMEOUT_MS = 5_000;
 
 /**
  * node-postgres returns bigint as a string, while PGlite returns a number — so
@@ -12,29 +17,50 @@ const PG_INT8 = 20;
  * other. Safe because amounts are capped at MAX_AMOUNT_MINOR by a check
  * constraint in schema.ts.
  *
+ * Process-wide by design: the driver has one parser table, and every connection
+ * this process opens must decode bigint the same way.
+ *
  * `numeric` is deliberately left as a string: exchange rates keep full precision
  * and are multiplied by Postgres, never by JS.
  */
 types.setTypeParser(PG_INT8, Number);
 
 /**
- * One pool for the process. A long-lived Express server holds its connections
- * open, which is the main reason this runs on a server rather than as functions.
+ * The node-postgres flavour of `DatabaseHandle`, keeping the concrete driver type
+ * for the few callers that need driver-specific results — the verification script
+ * reads `QueryResult.rows` directly. Everything else takes the abstract
+ * `Database`, which PGlite also satisfies.
  */
-export const pool = new Pool({
-  connectionString: config.DATABASE_URL,
-  max: 10,
-  idleTimeoutMillis: 30_000,
-  connectionTimeoutMillis: 5_000,
-});
+export interface PostgresDatabaseHandle extends DatabaseHandle {
+  db: NodePgDatabase<typeof schema>;
+}
 
-// An idle client erroring must not take the process down with an unhandled event.
-pool.on('error', (error) => {
-  console.error('Idle database client error:', error.message);
-});
+/**
+ * Opens a connection pool.
+ *
+ * Called exactly once per process, from the composition root in container.ts —
+ * never at import time. A pool created as a module side effect connects to a
+ * database merely because something imported a type from nearby, which is how a
+ * test run or a CLI script ends up holding a production connection.
+ *
+ * A long-lived Express server keeping its connections open is the main reason
+ * this runs on a server rather than as functions.
+ */
+export function createDatabase(connectionString: string): PostgresDatabaseHandle {
+  const pool = new Pool({
+    connectionString,
+    max: MAX_POOL_CLIENTS,
+    idleTimeoutMillis: IDLE_TIMEOUT_MS,
+    connectionTimeoutMillis: CONNECTION_TIMEOUT_MS,
+  });
 
-export const db = drizzle({ client: pool, schema });
+  // An idle client erroring must not take the process down with an unhandled event.
+  pool.on('error', (error) => {
+    console.error('Idle database client error:', error.message);
+  });
 
-export async function closeDatabase(): Promise<void> {
-  await pool.end();
+  return {
+    db: drizzle({ client: pool, schema }),
+    close: () => pool.end(),
+  };
 }

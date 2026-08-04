@@ -10,3 +10,14 @@ import type * as schema from './schema';
  * module constructs a connection pool.
  */
 export type Database = PgDatabase<PgQueryResultHKT, typeof schema>;
+
+/**
+ * A connection plus the means to release it. Held by the container, which closes
+ * it on shutdown; tests supply their own so nothing opens a real pool.
+ */
+export interface DatabaseHandle {
+  db: Database;
+  /* A property rather than a method: it is a closure over the pool and carries no
+     `this`, so passing it straight to `.finally(close)` is safe. */
+  close: () => Promise<void>;
+}

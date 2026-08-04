@@ -13,7 +13,13 @@ export default tseslint.config(
         tsconfigRootDir: import.meta.dirname,
       },
     },
-    linterOptions: { reportUnusedDisableDirectives: 'error' },
+    linterOptions: {
+      /* A rule that can be switched off in a comment is a rule that gets switched
+         off in the file where it mattered. If one of these is genuinely wrong, it
+         is wrong here, in the config, where the exception is visible. */
+      noInlineConfig: true,
+      reportUnusedDisableDirectives: 'error',
+    },
     rules: {
       '@typescript-eslint/no-explicit-any': 'error',
       '@typescript-eslint/no-floating-promises': 'error',
@@ -30,9 +36,12 @@ export default tseslint.config(
     },
   },
   {
-    // Architectural boundary: only repositories talk to the database.
+    /* Architectural boundary: only repositories talk to the database.
+       container.ts is exempt because it *builds* the connection and hands it to
+       the repositories — the one place that is allowed to, and it runs no
+       queries of its own. */
     files: ['src/**/*.ts'],
-    ignores: ['src/repositories/**', 'src/db/**'],
+    ignores: ['src/repositories/**', 'src/db/**', 'src/container.ts'],
     rules: {
       'no-restricted-imports': [
         'error',

@@ -21,6 +21,18 @@ const schema = z.object({
      configuration, and overridable so a public deployment is not using the
      password printed in the README. */
   SEED_DEMO_PASSWORD: z.string().min(8).default('AcmeDemo!2026'),
+  /* How many reverse proxies sit in front of this process. 0 locally; 1 behind a
+     single nginx or load balancer. Used for the client IP, which is what the rate
+     limiter counts — so guessing high lets a client forge X-Forwarded-For and
+     guessing low lumps every client behind the proxy together. */
+  TRUST_PROXY_HOPS: z.coerce.number().int().min(0).max(5).default(0),
+  AUTH_RATE_LIMIT_WINDOW_MINUTES: z.coerce.number().int().positive().max(1440).default(15),
+  /** Password guesses per IP per window. */
+  LOGIN_RATE_LIMIT_MAX: z.coerce.number().int().positive().default(10),
+  /* Higher: a legitimate client refreshes on a timer, and several open tabs each
+     refresh on their own. A refresh token is 256 bits of randomness, so this is a
+     brake on abuse rather than a defence against guessing. */
+  REFRESH_RATE_LIMIT_MAX: z.coerce.number().int().positive().default(60),
   CORS_ORIGIN: z
     .string()
     .default('http://localhost:5173')

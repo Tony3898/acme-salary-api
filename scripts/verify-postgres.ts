@@ -1,5 +1,6 @@
 import { sql } from 'drizzle-orm';
-import { closeDatabase, db } from '../src/db/client';
+import { config } from '../src/config';
+import { createDatabase, type PostgresDatabaseHandle } from '../src/db/client';
 
 /**
  * Checks the things PGlite cannot prove, because they are properties of the
@@ -9,7 +10,7 @@ import { closeDatabase, db } from '../src/db/client';
  * string by default, PGlite as a number. Every test runs on PGlite, so this is
  * the only place that behaviour is exercised at all.
  */
-async function main(): Promise<void> {
+async function main(db: PostgresDatabaseHandle['db']): Promise<void> {
   const checks: { name: string; passed: boolean; detail: string }[] = [];
   const record = (name: string, passed: boolean, detail: string) =>
     checks.push({ name, passed, detail });
@@ -85,9 +86,11 @@ async function main(): Promise<void> {
   }
 }
 
-main()
+const { db, close } = createDatabase(config.DATABASE_URL);
+
+main(db)
   .catch((error: unknown) => {
     console.error('Verification failed:', error instanceof Error ? error.message : error);
     process.exitCode = 1;
   })
-  .finally(closeDatabase);
+  .finally(close);

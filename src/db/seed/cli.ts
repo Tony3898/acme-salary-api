@@ -1,5 +1,5 @@
 import { config } from '../../config';
-import { closeDatabase, db } from '../client';
+import { createDatabase } from '../client';
 import { seed } from './seed';
 
 /**
@@ -13,7 +13,8 @@ async function main(): Promise<void> {
   }
 
   const startedAt = Date.now();
-  const summary = await seed(db, { demoPassword: config.SEED_DEMO_PASSWORD });
+  const { db, close } = createDatabase(config.DATABASE_URL);
+  const summary = await seed(db, { demoPassword: config.SEED_DEMO_PASSWORD }).finally(close);
 
   console.log(
     `Seeded ${summary.employees.toLocaleString()} employees and ` +
@@ -25,9 +26,7 @@ async function main(): Promise<void> {
   }
 }
 
-main()
-  .catch((error: unknown) => {
-    console.error('Seed failed:', error instanceof Error ? error.message : error);
-    process.exitCode = 1;
-  })
-  .finally(closeDatabase);
+main().catch((error: unknown) => {
+  console.error('Seed failed:', error instanceof Error ? error.message : error);
+  process.exitCode = 1;
+});
