@@ -10,8 +10,14 @@
  * that assert on a log line simply spy on the same method, and `restoreMocks` puts
  * the originals back afterwards.
  */
-beforeEach(() => {
+function silenceConsole(): void {
   jest.spyOn(console, 'log').mockImplementation(() => undefined);
   jest.spyOn(console, 'warn').mockImplementation(() => undefined);
   jest.spyOn(console, 'error').mockImplementation(() => undefined);
-});
+}
+
+/* Once at load, which covers the `beforeAll` hooks that build a harness and sign
+   people in, and again before each test, because `restoreMocks` puts the real
+   console back between them. */
+silenceConsole();
+beforeEach(silenceConsole);

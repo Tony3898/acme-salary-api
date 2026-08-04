@@ -1,6 +1,8 @@
 import { createDatabase } from './db/client';
 import type { Database, DatabaseHandle } from './db/database';
 import { createAuthService, type AuthService } from './services/auth';
+import { createEmployeeService, type EmployeeService } from './services/employees';
+import { createLookupService, type LookupService } from './services/lookups';
 
 /**
  * The composition root: one connection pool and one instance of each service,
@@ -41,11 +43,15 @@ export interface ContainerOverrides {
   database?: DatabaseHandle;
   /** Injected so a test can move time without waiting for it. */
   now?: () => Date;
+  /** Shortened by tests that are about expiry rather than about the data. */
+  lookupTtlMs?: number;
 }
 
 export interface Container {
   readonly db: Database;
   readonly auth: AuthService;
+  readonly employees: EmployeeService;
+  readonly lookups: LookupService;
   /** Releases everything the container opened. Called once, on shutdown. */
   close: () => Promise<void>;
 }
@@ -65,9 +71,20 @@ export function createContainer(
     now,
   });
 
+  const employees = createEmployeeService({ db: database.db, now });
+
+  const lookups = createLookupService({
+    db: database.db,
+    // The cache works in milliseconds; the same clock, read differently.
+    now: () => now().getTime(),
+    ttlMs: overrides.lookupTtlMs,
+  });
+
   return {
     db: database.db,
     auth,
+    employees,
+    lookups,
     close: () => database.close(),
   };
 }

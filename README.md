@@ -57,7 +57,15 @@ node -e "console.log(require('crypto').randomBytes(48).toString('base64url'))"
 | `POST /api/auth/refresh`  | Exchanges the cookie for a new pair; the old refresh token stops working |
 | `POST /api/auth/logout`   | Ends the session server-side and clears the cookie                   |
 | `GET  /api/auth/me`       | The signed-in account, re-read from the database                     |
+| `GET  /api/employees`     | One page of employees with their pay, scoped to what the caller may see |
+| `GET  /api/lookups`       | Departments, levels, countries, exchange rates, pay bands — cached   |
 | `GET  /health`            | Unauthenticated, touches no database                                 |
+
+`GET /api/employees` takes `page`, `pageSize` (25/50/100), `sortBy`
+(name/salary/hireDate/country/department/level/status), `sortDir`, `q`, `country`, `departmentId`,
+`jobLevelId`, `status` and `asOf`. Sorting by salary sorts on the amount converted to USD, because
+₹2,000,000 is a bigger number than $150,000 and a smaller salary. `asOf` reports pay as it stood on that
+date. Anything not on those lists is refused rather than ignored.
 
 Failures share one shape — `{ "error": { "code", "message" } }`, with `details` added for validation —
 so the client parses one thing. A failed login answers identically whether the email is unknown or the

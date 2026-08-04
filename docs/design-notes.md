@@ -166,9 +166,25 @@ in the process.
 endless, so little would ever be reused — and because access differs per user, the same URL returns
 different data to different people. Caching those responses risks serving one person's view to another.
 
-**No Redis.** For 10 KB behind a single server it is another service to run, secure and monitor. The
-threshold is written in the code: add it when more than one server runs, because separate processes
-cannot share an in-memory map.
+**In-memory here; Redis in a real deployment.** This runs as one process on one server, so the cache
+lives in that process — 10 KB in a `Map`, no extra service to run, secure, monitor or fail. That is the
+right answer for this app and the wrong answer for most production ones, so the boundary is worth stating
+plainly rather than discovering later.
+
+What breaks first is not size, it is the second process. Two servers behind a load balancer each hold
+their own copy: a department renamed through the app invalidates one of them, and the other keeps serving
+the old name until its TTL runs out — so the same user sees the change appear and disappear depending on
+which server answers. Nothing errors, which is what makes it unpleasant to diagnose.
+
+So the trigger to move is horizontal scaling, or anything else that needs state shared between
+processes — session revocation lists, rate limit counters that must hold across servers, a job queue.
+When it comes, Redis replaces the `load`/`invalidate` pair behind `createCachedValue` and nothing that
+calls it changes: `src/cache.ts` exists as a seam for exactly that. Its cost, stated honestly, is a
+service to operate, a network hop on every miss, and a new failure mode — the cache being unreachable —
+which the current design cannot have.
+
+Two things would still not be cached in Redis: employee and salary data, for the reasons above, and
+anything a stale read would make wrong.
 
 **Statistics are not cached either.** Each runs in roughly 20–30 ms at this size (measured, see
 [performance.md](performance.md)), and a cache would let the

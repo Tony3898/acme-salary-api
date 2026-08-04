@@ -8,6 +8,8 @@ import { errorHandler, notFoundHandler } from './middleware/errorHandler';
 import { createRateLimiter } from './middleware/rateLimit';
 import { requireAuth } from './middleware/requireAuth';
 import { createAuthRouter } from './routes/auth';
+import { createEmployeeRouter } from './routes/employees';
+import { createLookupRouter } from './routes/lookups';
 
 /**
  * Builds the HTTP layer around an already-built container.
@@ -78,15 +80,28 @@ export function createApp(options: AppOptions): Express {
     res.status(HTTP_STATUS.OK).json({ status: 'ok' });
   });
 
+  // One instance, shared by every route that needs a signed-in caller.
+  const authenticated = requireAuth(options.jwtSecret);
+
   app.use(
     '/api/auth',
     createAuthRouter({
       auth: options.container.auth,
-      requireAuth: requireAuth(options.jwtSecret),
+      requireAuth: authenticated,
       loginLimiter,
       refreshLimiter,
       secureCookies: options.secureCookies,
     }),
+  );
+
+  app.use(
+    '/api/employees',
+    createEmployeeRouter({ employees: options.container.employees, requireAuth: authenticated }),
+  );
+
+  app.use(
+    '/api/lookups',
+    createLookupRouter({ lookups: options.container.lookups, requireAuth: authenticated }),
   );
 
   // Last: an unmatched URL is a 404 in the same shape as any other failure.

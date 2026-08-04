@@ -27,6 +27,35 @@ Each figure is a single run including planning time, via `psql \timing`.
 | Employee list, page of 25 sorted by converted salary      | 25.6 ms |
 | Payroll cost in USD by department                         | 28.8 ms |
 
+## Endpoints, measured end to end
+
+Round trips from `curl` against the running API on the same machine, so these include HTTP, JSON and
+process time — not just the query.
+
+| Request                                                | Time    |
+| ------------------------------------------------------ | ------- |
+| `GET /api/lookups`, cached                             | 0.9 ms  |
+| `GET /api/employees` as an Employee (1 person)         | 2 ms    |
+| `GET /api/employees` as a Manager (84 people)          | 5 ms    |
+| `GET /api/employees` filtered to one department        | 11 ms   |
+| `GET /api/lookups`, cold                               | 11 ms   |
+| `GET /api/employees` as of a past date                 | 41 ms   |
+| `GET /api/employees` sorted by converted salary        | 51 ms   |
+| `GET /api/employees` page 400 of 400                   | 54 ms   |
+| `POST /api/auth/login` (argon2id, or its decoy)        | 28 ms   |
+
+Walking all 400 pages returned 10,000 people, 10,000 of them distinct: nobody repeated, nobody missed.
+
+**Why a page of 25 costs 50 ms over 10,000 rows.** `EXPLAIN ANALYZE` puts execution at 47 ms, and the
+shape is unavoidable rather than accidental: both the sort and the `COUNT(*) OVER ()` need everybody's
+current salary before either can produce the first row, so the lateral lookup runs 10,000 times — twice
+per person against `compensation_employee_effective_idx`. The exchange-rate join is free, memoised to six
+lookups for 10,000 rows. Paging cannot avoid this while the answer includes a total and a sort on a
+computed column.
+
+The cheap scoped queries above make the same point from the other side: a Manager's page costs 5 ms
+because the scope is a condition inside the query, so the work is proportional to what they may see.
+
 **A correction worth recording:** an earlier draft of the design notes claimed every statistic runs "in
 under 20 ms". Measured, three of the six are between 20 and 30 ms. The conclusion is unchanged — none of
 these is close to needing a cache — but the number was asserted before it was measured, and the measured
@@ -48,10 +77,11 @@ caching it would risk a dashboard showing stale figures immediately after a rais
 data — departments, levels, bands, rates, about 10 KB — is cached, in process. See
 [design-notes.md](design-notes.md#caching-lookup-data-only).
 
-**Where this would change.** If the `DISTINCT ON` pass ever dominates — a much larger company, or many
+**Where this would change.** If resolving current pay ever dominates — a much larger company, or many
 concurrent dashboard users — the next step is a materialised view of current pay, refreshed when a salary
 record is inserted. That is a real trade-off (a second source of truth) and is not worth taking on at this
-size.
+size. The 50 ms list query is the first place it would pay off, and the number to beat is recorded above
+so the claim can be checked rather than argued.
 
 ## Reproducing
 
