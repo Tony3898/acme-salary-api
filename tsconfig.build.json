@@ -6,5 +6,9 @@
     "rootDir": "src",
     "types": ["node"]
   },
-  "include": ["src"]
+  "include": ["src"],
+  /* Tests live under tests/ and are not part of the build. Excluded here as well,
+     so a test file that strays back into src/ fails this build rather than
+     shipping a dev dependency to production. */
+  "exclude": ["**/*.test.ts"]
 }

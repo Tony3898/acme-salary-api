@@ -8,24 +8,29 @@ import {
   salaryBands,
   users,
 } from '../../src/db/schema';
-import { createTestDb, one, rejectionReason, type TestDb } from '../helpers/testDb';
+import { one, rejectionReason, useTestDatabases, type TestDb } from '../helpers/testDb';
 
 /**
  * These tests are about the constraints, not the queries. Anything the database
  * can refuse on its own is one less thing every code path has to remember.
  */
 describe('schema', () => {
+  const databases = useTestDatabases();
   let db: TestDb;
   let departmentId: number;
   let jobLevelId: number;
 
   beforeEach(async () => {
-    db = await createTestDb();
+    db = await databases.create();
     departmentId = one(await db.insert(departments).values({ name: 'Engineering' }).returning()).id;
     jobLevelId = one(
       await db.insert(jobLevels).values({ name: 'Senior Engineer', rank: 30 }).returning(),
     ).id;
   });
+
+  /* A fresh database per test, so a constraint test cannot be affected by rows
+     another one left behind — and each is released rather than piling up. */
+  afterEach(databases.closeAll);
 
   const anEmployee = (overrides: Partial<typeof employees.$inferInsert> = {}) => ({
     fullName: 'Sarah Fisher',

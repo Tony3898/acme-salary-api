@@ -5,7 +5,7 @@ import {
   formatMinorToDecimal,
   isSupportedCurrency,
   parseAmountToMinor,
-} from './money';
+} from '../../src/domain/money';
 
 describe('parseAmountToMinor', () => {
   it('given a decimal amount, when parsed, then it becomes whole minor units', () => {

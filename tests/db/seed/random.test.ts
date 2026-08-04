@@ -1,4 +1,4 @@
-import { SeededRandom } from './random';
+import { SeededRandom } from '../../../src/db/seed/random';
 
 describe('SeededRandom', () => {
   /** Ten values from one generator. Drawing from a fresh instance each time would

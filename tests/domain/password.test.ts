@@ -1,4 +1,4 @@
-import { hashPassword, verifyPassword } from './password';
+import { hashPassword, verifyPassword } from '../../src/domain/password';
 
 describe('passwords', () => {
   it('given a password, when hashed, then the result is an argon2id hash and not the password', async () => {

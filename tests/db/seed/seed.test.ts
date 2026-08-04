@@ -1,7 +1,7 @@
 import { sql } from 'drizzle-orm';
-import { compensationRecords, employees, jobLevels, salaryBands, users } from '../../src/db/schema';
-import { seed } from '../../src/db/seed/seed';
-import { createTestDb, type TestDb } from '../helpers/testDb';
+import { compensationRecords, employees, jobLevels, salaryBands, users } from '../../../src/db/schema';
+import { seed } from '../../../src/db/seed/seed';
+import { useTestDatabases, type TestDb } from '../../helpers/testDb';
 
 /**
  * The seed is test infrastructure as much as a demo: other tests rely on it
@@ -16,15 +16,18 @@ const SEED_OPTIONS = {
 } as const;
 
 describe('seed', () => {
+  const databases = useTestDatabases();
   let db: TestDb;
 
   /* Seeded once for the whole file: all but three of these tests only read, and
      re-seeding per test made the suite twenty seconds slower for no extra
      coverage. The three that need isolation build their own database. */
   beforeAll(async () => {
-    db = await createTestDb();
+    db = await databases.create();
     await seed(db, SEED_OPTIONS);
   });
+
+  afterAll(databases.closeAll);
 
   const countOf = async (table: typeof employees | typeof compensationRecords) => {
     const [row] = await db.select({ total: sql<number>`count(*)::int` }).from(table);
@@ -55,7 +58,7 @@ describe('seed', () => {
       return JSON.stringify({ rows, payroll: totals?.payroll });
     };
 
-    expect(await fingerprint(db)).toBe(await fingerprint(await createTestDb()));
+    expect(await fingerprint(db)).toBe(await fingerprint(await databases.create()));
   });
 
   it('given a different seed, when seeded, then the data differs', async () => {
@@ -65,7 +68,7 @@ describe('seed', () => {
       .from(employees)
       .orderBy(employees.id);
 
-    const other = await createTestDb();
+    const other = await databases.create();
     await seed(other, { ...SEED_OPTIONS, randomSeed: 7 });
     const second = await other
       .select({ name: employees.fullName })
@@ -214,7 +217,7 @@ describe('seed', () => {
        least five people — the same two rules the feature itself uses. Comparing
        raw amounts across countries would just be measuring the exchange rate:
        a median that mixes rupees with dollars means nothing. */
-    const target = await createTestDb();
+    const target = await databases.create();
     // Needs more people than the other tests: 36 level/country groups have to
     // reach five of each gender before a comparison is meaningful.
     await seed(target, { ...SEED_OPTIONS, employeeCount: 1500 });
@@ -324,7 +327,7 @@ describe('seed', () => {
   });
 
   it('given an already seeded database, when seeded again, then it is replaced rather than duplicated', async () => {
-    const target = await createTestDb();
+    const target = await databases.create();
     await seed(target, SEED_OPTIONS);
     await seed(target, SEED_OPTIONS);
 

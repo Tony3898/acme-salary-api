@@ -5,19 +5,54 @@ import * as schema from '../../src/db/schema';
 
 export type TestDb = PgliteDatabase<typeof schema>;
 
+export interface TestDatabaseHandle {
+  db: TestDb;
+  close: () => Promise<void>;
+}
+
 /**
  * A fresh Postgres per call, in-process, with the schema built from schema.ts
  * itself — so there is no hand-written SQL copy of the schema to drift out of
  * step with the real one.
+ *
+ * Shaped like the production `DatabaseHandle`, so the container accepts it and
+ * tests exercise the same wiring the server uses rather than a parallel one.
  */
-export async function createTestDb(): Promise<TestDb> {
+export async function createTestDatabaseHandle(): Promise<TestDatabaseHandle> {
   const client = new PGlite();
   const db = drizzle({ client, schema });
 
   const { apply } = await pushSchema(schema, db as unknown as Parameters<typeof pushSchema>[1]);
   await apply();
 
-  return db;
+  return { db, close: () => client.close() };
+}
+
+/**
+ * Every database a test file opens, closed together at the end of it.
+ *
+ * Each one is a WebAssembly Postgres holding memory and a message port. Left open
+ * they keep the Jest worker alive after the file finishes, which shows up as
+ * "a worker process has failed to exit gracefully" — a warning today, and a
+ * genuinely leaking test suite once there are more of them.
+ */
+export function useTestDatabases(): {
+  create: () => Promise<TestDb>;
+  closeAll: () => Promise<void>;
+} {
+  const handles: TestDatabaseHandle[] = [];
+
+  return {
+    create: async () => {
+      const handle = await createTestDatabaseHandle();
+      handles.push(handle);
+      return handle.db;
+    },
+    closeAll: async () => {
+      await Promise.all(handles.map((handle) => handle.close()));
+      handles.length = 0;
+    },
+  };
 }
 
 /**

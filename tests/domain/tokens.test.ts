@@ -5,7 +5,7 @@ import {
   issueRefreshToken,
   signAccessToken,
   verifyAccessToken,
-} from './tokens';
+} from '../../src/domain/tokens';
 
 const SECRET = 'a'.repeat(32);
 const OTHER_SECRET = 'b'.repeat(32);

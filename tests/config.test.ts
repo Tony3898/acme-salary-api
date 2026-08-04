@@ -1,4 +1,4 @@
-import { parseConfig } from './config';
+import { parseConfig } from '../src/config';
 
 /** Long enough to satisfy the minimum. Not a real secret. */
 const A_VALID_SECRET = 'x'.repeat(32);
