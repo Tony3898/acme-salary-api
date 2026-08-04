@@ -52,6 +52,12 @@ All three are now tests.
 
 Notes are added here only where the output needed correcting or an exchange changed the design.
 
+**Step 3 — verifying against real Postgres.** The suite runs on PGlite, so several claims about the `pg`
+driver were untested for two steps. Running the real path found none of them wrong, but the exercise
+corrected a number I had asserted rather than measured: the design notes said every statistic runs "in
+under 20 ms", and three of six are 20–30 ms. Measured figures are now in
+[performance.md](performance.md).
+
 **Step 1 — test database.** PGlite returns a `bigint` column as a JS number, while `node-postgres`
 returns a string; and `SUM()` over `bigint` widens to `numeric`, which arrives as a string in both. Left
 alone, tests would have passed on one shape while production received another. Totals now cast back with
