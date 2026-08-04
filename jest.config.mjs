@@ -20,7 +20,9 @@ export default {
   },
   clearMocks: true,
   restoreMocks: true,
-  collectCoverageFrom: ['src/**/*.ts', '!src/db/seed.ts', '!src/server.ts'],
+  /* Excluded: wiring with no logic of its own, covered by the app actually
+     connecting rather than by a test asserting that a constructor was called. */
+  collectCoverageFrom: ['src/**/*.ts', '!src/db/seed.ts', '!src/db/client.ts', '!src/server.ts'],
   coverageThreshold: {
     global: { statements: 80, branches: 80, functions: 80, lines: 80 },
   },
