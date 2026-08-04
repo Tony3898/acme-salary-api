@@ -13,6 +13,21 @@ never use `parseFloat` on a money value.
 **Limit accepted:** the arithmetic assumes two decimal places. Yen has none and Kuwaiti Dinar has three,
 so those currencies are out of scope rather than half-supported.
 
+**The parser refuses separators, and this is not pedantry.** An earlier version stripped commas before
+parsing, on the reasoning that spreadsheet exports contain `85,000.50`. Half of Europe writes `85000,50`
+for eighty-five thousand — stripping the comma reads that as eight and a half million, a hundredfold
+overpayment that passes every later check and lands in an append-only table. Since this app supports EUR,
+that input is expected rather than hypothetical. A stricter grouping rule does not fix it either: western
+formatting groups as `8,500,000` and Indian as `85,00,000`, so no single rule is correct everywhere.
+
+So `domain/money` knows nothing about locales and accepts only a plain decimal string. Normalising is the
+CSV importer's job, because it is the only part of the system that knows which file the numbers came from
+and can ask. Guessing centrally has no safe answer.
+
+**Zero is refused at the same boundary,** rather than being left to the database check. Nobody is paid
+nothing, and matching the rule in both places means a zero arrives as a rejected input with a clear
+message instead of a failed insert.
+
 ## Salary history instead of a salary column
 
 Rather than an editable `salary` field, `compensation_records` holds every salary a person has ever had,
