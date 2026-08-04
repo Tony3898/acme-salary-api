@@ -15,10 +15,11 @@ Read these first — they explain what is built and why.
 | [architecture.md](docs/architecture.md) | Deployment, layers, data model diagrams.                             |
 | [design-notes.md](docs/design-notes.md) | Trade-offs, and what each decision costs.                            |
 | [ai-prompts.md](docs/ai-prompts.md)     | How AI tools were used, and where the output needed correcting.      |
+| [performance.md](docs/performance.md)   | Measured query and seed timings, and what they imply.                |
 
 ## Running locally
 
-Needs Node 22+ and Docker.
+Needs Node 22+ and PostgreSQL 15 or later.
 
 ```bash
 cp .env.example .env
@@ -28,6 +29,36 @@ npm run db:push               # create the schema
 npm run seed                  # 10,000 employees + demo accounts
 npm run dev                   # API on :3000
 ```
+
+Already have Postgres running locally? Skip the `docker compose` line and create the role and database
+that `.env.example` expects:
+
+```bash
+psql -d postgres -c "CREATE ROLE acme LOGIN PASSWORD 'acme_local_dev'"
+createdb -O acme acme_salary
+```
+
+`npm run verify:pg` then checks the things the test suite cannot: the tests run against PGlite, which
+returns some column types differently from the `pg` driver used in production.
+
+## Demo accounts
+
+Created by the seed. Password is `AcmeDemo!2026` for all four, overridable with
+`SEED_DEMO_PASSWORD`. **Demo only** — these are published here on purpose.
+
+| Email                 | Role      | Sees                                     |
+| --------------------- | --------- | ---------------------------------------- |
+| `hr.admin@acme.test`  | HR Admin  | Everyone, and can record changes         |
+| `hr.viewer@acme.test` | HR Viewer | Everyone, read only                      |
+| `manager@acme.test`   | Manager   | Their own reporting line, read only      |
+| `employee@acme.test`  | Employee  | Their own record and salary history only |
+
+The manager and employee accounts are linked so the employee sits inside the manager's team, which makes
+the difference between the two visible.
+
+**The data is synthetic.** Names are generated combinations and pay figures are plausible rather than real
+market data. A small gender pay gap is introduced deliberately, because randomly generated salaries show
+none and the pay-gap screen would have nothing to display. Same seed, same data, every run.
 
 ## Checks
 

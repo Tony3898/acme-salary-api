@@ -105,7 +105,8 @@ export const compensationRecords = pgTable(
     currency: currencyEnum('currency').notNull(),
     effectiveFrom: date('effective_from', { mode: 'string' }).notNull(),
     reason: text('reason'),
-    /** Who recorded it. NULL for rows created by the seed script. */
+    /* Who recorded it. NULL means the record predates this system — the history
+       carried over from the spreadsheets it replaced, which has no author. */
     createdBy: integer('created_by').references((): AnyPgColumn => users.id),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   },

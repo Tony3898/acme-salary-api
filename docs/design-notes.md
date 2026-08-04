@@ -144,7 +144,8 @@ different data to different people. Caching those responses risks serving one pe
 threshold is written in the code: add it when more than one server runs, because separate processes
 cannot share an in-memory map.
 
-**Statistics are not cached either.** Each runs in under 20 ms at this size, and a cache would let the
+**Statistics are not cached either.** Each runs in roughly 20–30 ms at this size (measured, see
+[performance.md](performance.md)), and a cache would let the
 dashboard show stale figures immediately after a raise. If the benchmark shows otherwise, cache then.
 
 Two free layers remain: CloudFront caches the JS and CSS, and the browser caches lookup responses.
