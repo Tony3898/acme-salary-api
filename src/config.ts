@@ -10,6 +10,13 @@ const schema = z.object({
   NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
   PORT: z.coerce.number().int().positive().default(3000),
   DATABASE_URL: z.string().min(1, 'DATABASE_URL is required'),
+  /* Signs access tokens. Deliberately has no default: a fallback secret in
+     source would mean anybody could mint a valid token for a deployment whose
+     operator forgot to set one. 32 characters minimum. */
+  JWT_SECRET: z.string().min(32, 'JWT_SECRET must be at least 32 characters'),
+  /** Short-lived by design: the refresh token is what provides continuity. */
+  ACCESS_TOKEN_TTL_MINUTES: z.coerce.number().int().positive().max(60).default(15),
+  REFRESH_TOKEN_TTL_DAYS: z.coerce.number().int().positive().max(90).default(7),
   /* Password for the seeded demo logins. Defaulted so local setup needs no
      configuration, and overridable so a public deployment is not using the
      password printed in the README. */

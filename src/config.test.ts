@@ -1,11 +1,15 @@
 import { parseConfig } from './config';
 
+/** Long enough to satisfy the minimum. Not a real secret. */
+const A_VALID_SECRET = 'x'.repeat(32);
+
 describe('parseConfig', () => {
   it('given a complete environment, when parsed, then values become their real types', () => {
     const config = parseConfig({
       NODE_ENV: 'production',
       PORT: '8080',
-      DATABASE_URL: 'postgresql://user:secret@db:5432/acme',
+      DATABASE_URL: 'postgresql://db:5432/acme',
+      JWT_SECRET: A_VALID_SECRET,
       CORS_ORIGIN: 'https://acme.example, https://admin.acme.example',
     });
 
@@ -28,6 +32,7 @@ describe('parseConfig', () => {
     const parse = () =>
       parseConfig({
         DATABASE_URL: 'postgresql://localhost:5432/acme',
+        JWT_SECRET: A_VALID_SECRET,
         SEED_DEMO_PASSWORD: 'cnry',
         PORT: 'not-a-port',
       });
@@ -38,22 +43,40 @@ describe('parseConfig', () => {
   });
 
   it('given only the required values, when parsed, then defaults apply', () => {
-    const config = parseConfig({ DATABASE_URL: 'postgresql://localhost:5432/acme' });
+    const config = parseConfig({ DATABASE_URL: 'postgresql://localhost:5432/acme', JWT_SECRET: A_VALID_SECRET });
 
     expect(config.NODE_ENV).toBe('development');
     expect(config.PORT).toBe(3000);
     expect(config.isProduction).toBe(false);
   });
 
+  it('given no JWT secret, when parsed, then it is rejected rather than defaulted', () => {
+    /* A default signing secret would let anybody mint a valid token for a
+       deployment whose operator forgot to set one. */
+    expect(() => parseConfig({ DATABASE_URL: 'postgresql://localhost:5432/acme' })).toThrow(
+      /JWT_SECRET/,
+    );
+  });
+
+  it('given a short JWT secret, when parsed, then it is rejected', () => {
+    expect(() =>
+      parseConfig({ DATABASE_URL: 'postgresql://localhost:5432/acme', JWT_SECRET: 'too-short' }),
+    ).toThrow(/JWT_SECRET/);
+  });
+
   it('given a short demo password, when parsed, then it is rejected', () => {
     expect(() =>
-      parseConfig({ DATABASE_URL: 'postgresql://localhost:5432/acme', SEED_DEMO_PASSWORD: 'x' }),
+      parseConfig({
+        DATABASE_URL: 'postgresql://localhost:5432/acme',
+        JWT_SECRET: A_VALID_SECRET,
+        SEED_DEMO_PASSWORD: 'x',
+      }),
     ).toThrow(/SEED_DEMO_PASSWORD/);
   });
 
   it('given a returned config, when a value is reassigned, then it does not change', () => {
     // Frozen so no module can quietly repoint the database mid-process.
-    const config = parseConfig({ DATABASE_URL: 'postgresql://localhost:5432/acme' });
+    const config = parseConfig({ DATABASE_URL: 'postgresql://localhost:5432/acme', JWT_SECRET: A_VALID_SECRET });
 
     expect(() => {
       (config as { PORT: number }).PORT = 9999;

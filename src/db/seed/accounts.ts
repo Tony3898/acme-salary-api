@@ -1,11 +1,8 @@
-import { hash } from '@node-rs/argon2';
+import { hashPassword } from '../../domain/password';
 import type { users } from '../schema';
 import type { EmployeeRow } from './people';
 
 export type UserRow = typeof users.$inferInsert;
-
-/** argon2id. The default cost is chosen by the library and applies to real logins too. */
-const ARGON2ID = 2;
 
 /**
  * One login per role.
@@ -36,7 +33,8 @@ export async function buildDemoAccounts(
   const employeeId =
     people.find((person) => person.managerId === managerId && person.status !== 'LEFT')?.id ?? 1;
 
-  const passwordHash = await hash(password, { algorithm: ARGON2ID });
+  // Same hashing as a real login, so these accounts are not a special case.
+  const passwordHash = await hashPassword(password);
 
   return [
     { id: 1, email: 'hr.admin@acme.test', passwordHash, role: 'HR_ADMIN' },
