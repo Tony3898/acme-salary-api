@@ -49,7 +49,7 @@ compare people across countries is misleading, because pay is set locally. So th
 fairness questions. Cost questions convert to USD; fairness questions compare a person to their local
 band in their own currency. Two separate screens, deliberately.
 
-**Limit accepted:** historic payroll totals are shown at *current* rates, and the UI says so. Rate
+**Limit accepted:** historic payroll totals are shown at _current_ rates, and the UI says so. Rate
 history is out of scope.
 
 ## Offset pagination, not cursor
@@ -95,7 +95,7 @@ The benchmark script exists partly to catch that.
 
 **Migrations:** `drizzle-kit push` while building, since the schema changes often and all data comes from
 the seed script. One migration is generated at first deploy, and real migrations apply from then on —
-once there is data that cannot be regenerated. Note that adding *records* is not a migration: CSV import,
+once there is data that cannot be regenerated. Note that adding _records_ is not a migration: CSV import,
 seeding and bulk raises change no schema.
 
 **Injection:** safety comes from parameterisation, not from the ORM. Two places need care and have tests
@@ -107,7 +107,7 @@ any raw `sql` block, where values are passed as parameters and never concatenate
 
 `buildAccessScope(user)` returns a database filter. Every read path applies it.
 
-**Why not route guards:** guards stop people *doing* things. A Manager denied edit access could still
+**Why not route guards:** guards stop people _doing_ things. A Manager denied edit access could still
 open the dashboard and read company-wide averages, because that is only reading. A filter at the data
 layer covers every path, including ones added later.
 
