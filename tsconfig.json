@@ -1,0 +1,28 @@
+{
+  "compilerOptions": {
+    "target": "ES2023",
+    "lib": ["ES2023"],
+    /* node20 resolves as CommonJS because package.json has no "type": "module".
+       Chosen over ESM so Jest needs no module-format workarounds and relative
+       imports need no .js suffix. */
+    "module": "node20",
+    "types": ["node", "jest"],
+
+    /* Strictness. noUncheckedIndexedAccess is deliberate: rows[0] is
+       possibly undefined, which is exactly the empty-result trap in
+       the paginated queries. */
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "noImplicitOverride": true,
+    "noFallthroughCasesInSwitch": true,
+    "noPropertyAccessFromIndexSignature": true,
+    "forceConsistentCasingInFileNames": true,
+
+    "esModuleInterop": true,
+    "resolveJsonModule": true,
+    "skipLibCheck": true,
+    "sourceMap": true,
+    "noEmit": true
+  },
+  "include": ["src", "tests", "*.config.ts"]
+}
