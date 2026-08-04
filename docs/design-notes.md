@@ -131,6 +131,32 @@ being shown statistics narrowed to their team. An average over three people is n
 effectively discloses individual salaries. The navigation hides what a role cannot open, so this reads as
 a smaller app rather than a wall of errors.
 
+## Sessions: a short access token plus a rotating refresh token
+
+A 15-minute access token is held in browser memory and sent as `Authorization: Bearer`. A 7-day refresh
+token lives in an httpOnly cookie scoped to `/api/auth`, is stored only as a SHA-256 hash, and is
+replaced on every use.
+
+**Why not put the access token in a cookie too:** the API and the UI are on different domains in
+production, so the cookie has to be `SameSite=None`. Another site can then cause a refresh — but not
+benefit from one, because the new access token comes back in the response body and the browser will not
+let a cross-origin script read that. Keeping the access token out of a cookie is what makes the
+cross-site cookie safe, and is also why `localStorage` is not used: an injected script can read it.
+
+**Why the refresh token is hashed with SHA-256 and the password with argon2id.** A password is low
+entropy and compared by verification, so it needs a deliberately slow hash. A refresh token is 256 bits
+of randomness and is looked up by hash on every refresh, so the hash has to be deterministic and there is
+nothing to brute-force.
+
+**Rotation records why a token was revoked.** Replaying a token that was already rotated means two
+parties hold it, so every session for that account ends. Replaying one that was *logged out* is ordinary
+— a background tab retrying after another tab signed out — and must not sign the person out elsewhere.
+Without the distinction, closing a laptop tab signs you out of your phone.
+
+**Equal timing on a failed login.** An unknown email is verified against a decoy hash, so the response
+takes the same ~28 ms as a wrong password. Without it, a missing account answers in under a millisecond
+and the login form becomes a test for whether an address has an account.
+
 ## Caching: lookup data only
 
 Departments, job levels, countries, currencies, bands, rates, settings — about 10 KB, held in a TTL `Map`
@@ -174,6 +200,21 @@ plain HTML elements for layout and spacing; never both on one element. Design va
 shared between the theme and the Tailwind config.
 
 **Enforced, not documented:** an ESLint rule fails the build on a `sx` or `style` JSX attribute.
+
+## One container, built at startup
+
+`src/container.ts` opens the connection pool and constructs each service once, and `src/server.ts` is the
+only place that calls it. Everything else receives what it needs.
+
+**Why not `export const auth = ...`:** a module-level instance is created by whichever file imports it
+first, which in a test run means connecting to the real database as a side effect of an import. It also
+makes dependencies invisible — a function reaching for a global connection cannot be given a different
+one, so it cannot be tested without the real database behind it.
+
+**The rule that keeps a shared instance safe:** services hold dependencies, never request state. No
+current user, no request id, no open transaction on a service — requests overlap at every `await`, and
+one would answer with another's identity. Per-request values travel on the request; a transaction is
+passed to the repository call that needs it.
 
 ## Two repos
 

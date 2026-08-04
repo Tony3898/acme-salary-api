@@ -41,6 +41,28 @@ createdb -O acme acme_salary
 `npm run verify:pg` then checks the things the test suite cannot: the tests run against PGlite, which
 returns some column types differently from the `pg` driver used in production.
 
+`JWT_SECRET` has no default and the process refuses to start without one — a fallback signing secret in
+source would let anybody mint a valid token for a deployment whose operator forgot to set it. The copied
+`.env.example` carries a placeholder that is fine locally; generate a real one per environment:
+
+```bash
+node -e "console.log(require('crypto').randomBytes(48).toString('base64url'))"
+```
+
+## API
+
+| Endpoint                 | Purpose                                                             |
+| ------------------------ | ------------------------------------------------------------------- |
+| `POST /api/auth/login`    | Email and password in, access token in the body, refresh token in an httpOnly cookie |
+| `POST /api/auth/refresh`  | Exchanges the cookie for a new pair; the old refresh token stops working |
+| `POST /api/auth/logout`   | Ends the session server-side and clears the cookie                   |
+| `GET  /api/auth/me`       | The signed-in account, re-read from the database                     |
+| `GET  /health`            | Unauthenticated, touches no database                                 |
+
+Failures share one shape — `{ "error": { "code", "message" } }`, with `details` added for validation —
+so the client parses one thing. A failed login answers identically whether the email is unknown or the
+password is wrong.
+
 ## Demo accounts
 
 Created by the seed. Password is `AcmeDemo!2026` for all four, overridable with
@@ -74,13 +96,20 @@ npm run lint
 ```
 src/
   config.ts        every environment variable, validated once at startup
+  container.ts     one pool and one instance of each service, built at startup
+  app.ts           the HTTP layer, assembled around a container
+  server.ts        the process: config, container, listen, graceful shutdown
+  errors.ts        what a failure looks like to a client
+  logger.ts        one line of JSON per event, sensitive fields redacted
   db/              client, schema, seed, migrations
-  domain/          pure logic, no database: money, percentiles, access scope
+  domain/          pure logic, no database: money, tokens, passwords, roles
   repositories/    all database access, one file per area
   services/        business rules
   routes/          HTTP and input validation
-  middleware/      auth, roles, error handling
+  middleware/      auth, roles, rate limiting, error handling
+tests/             mirrors src/, so src/ holds only code that ships
 ```
 
-Two rules the linter enforces: nothing outside `repositories/` imports Drizzle, and `parseFloat` is
-banned — money is handled as whole minor units.
+Three rules the linter enforces: nothing outside `repositories/` imports Drizzle (`container.ts` may
+build the connection but runs no queries), `parseFloat` is banned — money is handled as whole minor units
+— and no `eslint-disable` comment is permitted.

@@ -52,6 +52,21 @@ All three are now tests.
 
 Notes are added here only where the output needed correcting or an exchange changed the design.
 
+**Step 4 — two problems the tests would not have found.** Both came from running the finished endpoints
+against real Postgres and reading the server's own log, not from the suite.
+
+The first was in the log line itself: signing out on one device and then letting a stale tab refresh was
+being recorded as `reuseDetected`, which ends _every_ session for that account. Correct for a stolen
+cookie, wrong for the far more common case of a background tab retrying after another tab signed out —
+closing a laptop tab would have signed the person out of their phone. Revocations now record why they
+happened, and only replaying a token that was _rotated_ is treated as theft.
+
+The second was structural. `src/config.test.ts` and the other colocated tests sat inside
+`tsconfig.build.json`'s `include`, so `npm run build` compiled test files into `dist` and failed on the
+missing Jest types. Nobody had run `build` yet. Tests now all live under `tests/`, mirroring `src/`, and
+the build excludes `*.test.ts` as well, so a test file that strays back into `src/` fails the build
+instead of shipping.
+
 **Step 3 — verifying against real Postgres.** The suite runs on PGlite, so several claims about the `pg`
 driver were untested for two steps. Running the real path found none of them wrong, but the exercise
 corrected a number I had asserted rather than measured: the design notes said every statistic runs "in
