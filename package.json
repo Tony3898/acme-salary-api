@@ -21,7 +21,8 @@
     "db:generate": "drizzle-kit generate",
     "db:migrate": "drizzle-kit migrate",
     "seed": "tsx src/db/seed/cli.ts",
-    "verify:pg": "tsx scripts/verify-postgres.ts"
+    "verify:pg": "tsx scripts/verify-postgres.ts",
+    "verify:injection": "tsx scripts/verify-injection.ts"
   },
   "dependencies": {
     "@node-rs/argon2": "^2.0.2",
