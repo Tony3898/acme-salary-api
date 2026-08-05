@@ -32,9 +32,14 @@ export const ACM_CERTIFICATE_ARN =
 export const WEB_BUCKET = `prod-${REGION}-${PROJECT}`;
 export const ECR_REPOSITORY = `${PROJECT}-api`;
 
-export const GITHUB_OWNER = 'Tony3898';
-export const WEB_REPO = `${PROJECT}-web`;
-export const API_REPO = `${PROJECT}-api`;
+/**
+ * The role the workflows assume, which this app does not create.
+ *
+ * It predates the project and is shared with six others, so it is a fact about the
+ * account in the same way the hosted zone and the certificate are. Named here so that
+ * `grep GitHubActionsRole` finds both the workflows and the reason.
+ */
+export const DEPLOY_ROLE_ARN = `arn:aws:iam::${ACCOUNT}:role/GitHubActionsRole`;
 
 /**
  * Cheapest instance that runs this app, measured rather than assumed: t4g.micro is

@@ -53,7 +53,7 @@ jobs:
 
       - uses: aws-actions/configure-aws-credentials@v4
         with:
-          role-to-assume: arn:aws:iam::651025161973:role/acme-salary-api-deploy
+          role-to-assume: arn:aws:iam::651025161973:role/GitHubActionsRole
           aws-region: ${{ env.AWS_REGION }}
 
       - id: ecr

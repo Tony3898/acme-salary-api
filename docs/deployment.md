@@ -35,23 +35,15 @@ CloudFormation export would have made the two stacks undeletable in the order th
 
 ## Running it
 
-Everything runs from GitHub Actions. The **infra** workflow takes `action` (deploy or destroy) and
-`stack`, and a compute deploy chains straight into the API deploy — so recreating the whole API is one
-click on one workflow, which is the point of writing it this way.
+Everything runs from GitHub Actions, with no manual step at all. The **infra** workflow takes `action`
+(deploy or destroy) and `stack`, and a compute deploy chains straight into the API deploy — so recreating
+the whole API is one click on one workflow, which is the point of writing it this way.
 
-There is exactly one step that cannot come from a workflow, and it is run once:
-
-```bash
-AWS_PROFILE=tony infra/bootstrap-role.sh          # creates the role the workflow assumes
-AWS_PROFILE=tony npx cdk bootstrap aws://651025161973/ap-south-1
-```
-
-A stack cannot create the credentials used to deploy that stack. `bootstrap-role.sh` creates
-`acme-salary-infra-deploy`, whose entire power is `sts:AssumeRole` on CDK's own bootstrap roles plus the
-reads that `cdk diff` and the expiry check need — narrow despite the stacks it deploys containing VPCs and
-IAM roles, because it does not create them itself. The alternative, an `AdministratorAccess` role trusted
-by a workflow, is what this account already has for six other repositories and is the thing worth not
-copying.
+| Workflow | Repository | Trigger                                                |
+| -------- | ---------- | ------------------------------------------------------ |
+| `infra`  | api        | dispatch, plus a daily run that enforces the fortnight |
+| `deploy` | api        | after CI passes on main, or dispatch                   |
+| `deploy` | web        | after CI passes on main, or dispatch                   |
 
 Locally, for reading rather than applying:
 
@@ -61,17 +53,27 @@ npx cdk diff acme-salary-compute      # what a deploy would change
 npx cdk synth --quiet                 # what CI checks on every push
 ```
 
-### Three roles, three jobs
+### Authentication, and a trade-off taken deliberately
 
-| Role                       | Used by             | Can                                                            |
-| -------------------------- | ------------------- | -------------------------------------------------------------- |
-| `acme-salary-infra-deploy` | infra workflow      | assume CDK's bootstrap roles; read stack state                 |
-| `acme-salary-api-deploy`   | API deploy workflow | push one ECR repository; SSM commands to `Project=acme-salary` |
-| `acme-salary-web-deploy`   | web deploy workflow | write one bucket; invalidate one distribution                  |
+All three workflows assume `GitHubActionsRole` by OIDC. No access key exists for them, and the role's
+trust policy names each repository _and branch_ — so a fork's pull request or a pushed tag cannot assume
+it.
 
-None of them holds an access key, and none is `AdministratorAccess`. The `github` IAM user in the `CI-CD`
-group is a separate, older path — long-lived keys with S3, EC2, Lambda, CloudFront, CloudWatch and
-Parameter Store access — and nothing in this project uses it.
+An earlier version of this app created three roles instead, one per workflow, each scoped to exactly what
+that workflow does: write one bucket, push one registry, send SSM commands to one tag. That is the better
+security story and it is not the one this account tells. `GitHubActionsRole` already existed, already
+trusted these repositories, and is already how six other projects deploy. Two ways to authenticate the
+same kind of workflow is worse than one, and between a proven mechanism and a better-designed unproven
+one, the proven one wins.
+
+The cost of that, stated rather than buried: `GitHubActionsRole` carries `AdministratorAccess` and is
+shared across eight repositories, so a workflow compromised in any one of them can do anything in this
+account. What makes it acceptable here is exactly what makes it unacceptable in general — this deployment
+holds generated data, publishes its own demo password, and deletes itself in a fortnight. The first thing
+to change if any of that stops being true is this paragraph.
+
+Separately, the `github` IAM user in the `CI-CD` group is an older path again: long-lived access keys with
+S3, EC2, Lambda, CloudFront, CloudWatch and Parameter Store access. Nothing in this project uses it.
 
 ## What protects what
 
@@ -95,12 +97,12 @@ cannot do.
 **The instance role is two managed policies.** Session Manager and read-only ECR. No S3, no Secrets
 Manager — the only credentials on the box are in a file that was generated on it.
 
-**A role per repository, and per branch.** Not the account's existing `GitHubActionsRole`, which carries
-`AdministratorAccess` and is trusted by six repositories; a compromise of any one of them is a compromise
-of the account. `acme-salary-web-deploy` can write one bucket and invalidate one distribution.
-`acme-salary-api-deploy` can push one ECR repository and send SSM commands to instances tagged
-`Project=acme-salary`. Both trust `repo:Tony3898/<repo>:ref:refs/heads/main` — the branch matters, because
-trusting `repo:owner/name:*` lets any tag, or a pull request from a fork, assume the role.
+**No access keys, and the branch is pinned.** The workflows authenticate by OIDC, so there is no
+credential to rotate or to leak with the repository. The trust policy names
+`repo:Tony3898/<repo>:ref:refs/heads/main` for each — the branch matters, because trusting
+`repo:owner/name:*` also matches every tag anybody can push and every pull request from a fork, which is
+the usual way this pattern is got wrong. What that role can _do_ once assumed is the trade-off discussed
+above.
 
 **Secrets are generated on the instance and never leave it.** The first deploy writes
 `/opt/acme-salary/.env` with `openssl rand` for both the database password and `JWT_SECRET`, then derives

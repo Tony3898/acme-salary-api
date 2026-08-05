@@ -8,7 +8,6 @@ import {
   aws_cloudfront as cloudfront,
   aws_cloudfront_origins as origins,
   aws_ecr as ecr,
-  aws_iam as iam,
   aws_route53 as route53,
   aws_route53_targets as targets,
   aws_s3 as s3,
@@ -144,121 +143,25 @@ export class PersistentStack extends Stack {
       lifecycleRules: [{ description: 'Keep the last 3 images', maxImageCount: 3 }],
     });
 
-    // ── Deploy roles ────────────────────────────────────────────────────────────
+    // ── Deploying this ──────────────────────────────────────────────────────────
     /**
-     * One role per repository, and deliberately not the `GitHubActionsRole` already in
-     * this account — that one carries AdministratorAccess and is trusted by six
-     * repositories, so a compromise of any one of them is a compromise of the account.
-     * A workflow that copies files into a bucket does not need to be able to delete the
-     * bucket's neighbours.
+     * No roles here.
      *
-     * These two are for shipping the applications. The role that runs CDK itself is a
-     * third one, created outside this app by infra/bootstrap-role.sh — a stack cannot
-     * create the credentials used to deploy that stack, and pretending otherwise is how
-     * you end up with an infrastructure repository that only works on the laptop it was
-     * written on.
+     * An earlier version created one per repository, each scoped to exactly what its
+     * workflow does. It was the better security story and it is not what this account
+     * uses: `GitHubActionsRole` already exists, already trusts these two repositories,
+     * and is already how six other projects deploy. Two ways to authenticate the same
+     * kind of workflow is worse than one, and the one that is proven wins.
      *
-     * The OIDC provider is shared, since it is an account-level fact rather than a
-     * project resource.
+     * The trade-off, recorded rather than hidden: that role carries AdministratorAccess
+     * and is shared, so a workflow in any trusted repository can do anything in this
+     * account. What makes it acceptable here and not in general is that this deployment
+     * holds generated data and deletes itself in a fortnight. See docs/deployment.md.
      */
-    const github = iam.OpenIdConnectProvider.fromOpenIdConnectProviderArn(
-      this,
-      'GitHubOidc',
-      `arn:aws:iam::${name.ACCOUNT}:oidc-provider/token.actions.githubusercontent.com`,
-    );
-
-    /**
-     * `sub` pins the branch as well as the repository. Trusting
-     * `repo:owner/name:*` would let a pull request from a fork — or any tag anybody can
-     * push — assume the role, which is the usual way this pattern is got wrong.
-     */
-    const trust = (repo: string) =>
-      new iam.WebIdentityPrincipal(github.openIdConnectProviderArn, {
-        StringEquals: { 'token.actions.githubusercontent.com:aud': 'sts.amazonaws.com' },
-        StringLike: {
-          'token.actions.githubusercontent.com:sub': `repo:${name.GITHUB_OWNER}/${repo}:ref:refs/heads/main`,
-        },
-      });
-
-    const webDeploy = new iam.Role(this, 'WebDeployRole', {
-      roleName: `${name.PROJECT}-web-deploy`,
-      description: 'Publishes the built site. Trusted only by acme-salary-web on main.',
-      assumedBy: trust(name.WEB_REPO),
-      maxSessionDuration: Duration.hours(1),
-    });
-    site.grantReadWrite(webDeploy);
-    site.grantDelete(webDeploy);
-    webDeploy.addToPolicy(
-      new iam.PolicyStatement({
-        actions: ['cloudfront:CreateInvalidation'],
-        resources: [
-          `arn:aws:cloudfront::${name.ACCOUNT}:distribution/${distribution.distributionId}`,
-        ],
-      }),
-    );
-    /**
-     * So the workflow can find the distribution by its alias instead of being told the
-     * id in a GitHub variable somebody has to remember to update. `ListDistributions`
-     * has no resource-level form — it is inherently account-wide — but it returns
-     * configuration rather than content, and the write above is still pinned to one
-     * distribution.
-     */
-    webDeploy.addToPolicy(
-      new iam.PolicyStatement({
-        actions: ['cloudfront:ListDistributions'],
-        resources: ['*'],
-      }),
-    );
-
-    const apiDeploy = new iam.Role(this, 'ApiDeployRole', {
-      roleName: `${name.PROJECT}-api-deploy`,
-      description:
-        'Pushes the API image and restarts the instance. Trusted only by acme-salary-api on main.',
-      assumedBy: trust(name.API_REPO),
-      maxSessionDuration: Duration.hours(1),
-    });
-    repository.grantPullPush(apiDeploy);
-
-    /**
-     * Restarting the API is a Session Manager command, not an SSH session. There is no
-     * key pair for this instance and port 22 is never opened — an SSH key in a GitHub
-     * secret is a key that leaks with the repository, and every command sent this way
-     * is recorded in CloudTrail with the workflow run that sent it.
-     *
-     * Scoped by tag rather than by instance id, which is what lets the compute stack be
-     * destroyed and recreated without touching this role.
-     */
-    apiDeploy.addToPolicy(
-      new iam.PolicyStatement({
-        actions: ['ssm:SendCommand'],
-        resources: [`arn:aws:ec2:${name.REGION}:${name.ACCOUNT}:instance/*`],
-        conditions: { StringEquals: { 'ssm:resourceTag/Project': name.PROJECT } },
-      }),
-    );
-    apiDeploy.addToPolicy(
-      new iam.PolicyStatement({
-        actions: ['ssm:SendCommand'],
-        resources: [`arn:aws:ssm:${name.REGION}::document/AWS-RunShellScript`],
-      }),
-    );
-    apiDeploy.addToPolicy(
-      new iam.PolicyStatement({
-        // Reading a command's outcome, and finding the instance by tag in the first place.
-        actions: [
-          'ssm:GetCommandInvocation',
-          'ssm:ListCommandInvocations',
-          'ec2:DescribeInstances',
-          'ec2:DescribeTags',
-        ],
-        resources: ['*'],
-      }),
-    );
 
     new CfnOutput(this, 'WebUrl', { value: `https://${name.WEB_DOMAIN}` });
     new CfnOutput(this, 'SiteBucketName', { value: site.bucketName });
     new CfnOutput(this, 'DistributionId', { value: distribution.distributionId });
     new CfnOutput(this, 'EcrRepositoryUri', { value: repository.repositoryUri });
-    new CfnOutput(this, 'WebDeployRoleArn', { value: webDeploy.roleArn });
-    new CfnOutput(this, 'ApiDeployRoleArn', { value: apiDeploy.roleArn });
   }
 }
