@@ -1,4 +1,8 @@
-# The stack as it runs on the EC2 instance. Deployed to /opt/acme-salary/compose.yml.
+# The stack as it runs on the EC2 instance.
+#
+# Written to /opt/acme-salary/compose.yml by the instance's user data, which embeds
+# this file at synth time. Editing it therefore replaces the instance -- see the note
+# in infra/lib/compute-stack.ts.
 #
 # Three containers on one small server: Postgres, the API, and Caddy in front of it
 # terminating TLS. The database is on the same box rather than in RDS because the
@@ -6,7 +10,7 @@
 # fits in a laptop's page cache. The upgrade path is a DATABASE_URL change.
 #
 # Nothing here is committed with a secret in it. Values come from /opt/acme-salary/.env,
-# which is written once by infra/provision.sh and never leaves the instance.
+# which the deploy workflow writes once, on the instance, and which never leaves it.
 
 services:
   db:

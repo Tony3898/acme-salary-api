@@ -11,7 +11,32 @@ import {
   aws_route53 as route53,
 } from 'aws-cdk-lib';
 import type { Construct } from 'constructs';
+import * as fs from 'node:fs';
+import * as path from 'node:path';
 import * as name from './names';
+
+/**
+ * A file from `infra/`, read at synth time so it can be written by user data.
+ *
+ * They stay real files rather than template literals so that editors, linters and
+ * `git diff` treat them as the YAML and Caddy config they are.
+ */
+function infraFile(fileName: string): string {
+  return fs.readFileSync(path.join(__dirname, '..', fileName), 'utf8');
+}
+
+/**
+ * Writes `contents` to `destination` with a quoted heredoc.
+ *
+ * Quoted, so the shell expands nothing on the way in: `compose.yml` is full of
+ * `${POSTGRES_PASSWORD}` and friends that Compose must receive literally and resolve
+ * itself from `.env`. An unquoted heredoc would substitute them to empty strings
+ * during boot and the failure would surface much later as an unrelated error.
+ */
+function writeFile(destination: string, contents: string): string {
+  const marker = 'EOF_INFRA_FILE';
+  return `cat > ${destination} <<'${marker}'\n${contents.trimEnd()}\n${marker}`;
+}
 
 /**
  * The half that gets deleted.
@@ -133,8 +158,19 @@ export class ComputeStack extends Stack {
 
     /**
      * Everything the box needs before a deploy can run, so that recreating it is one
-     * command and no manual steps: Docker, Compose, swap, and the directory the deploy
-     * writes into.
+     * command and no manual steps: Docker, Compose, swap, the directory the deploy
+     * writes into, and the two files that describe the containers.
+     *
+     * `compose.yml` and the `Caddyfile` are written here rather than uploaded by the
+     * deploy workflow because they describe the machine, not the release. The release
+     * is one image tag, and that arrives in `.env`. The first version of this shipped
+     * neither, and the deploy failed on an empty directory with `no configuration file
+     * provided` — the instance had never run a container.
+     *
+     * The consequence to know about: editing either file changes the user data, and
+     * `userDataCausesReplacement` means a new instance. That is correct — they are the
+     * machine's definition — but it also discards Caddy's certificate volume, so
+     * iterating on them burns Let's Encrypt issuances against a limit of five per week.
      *
      * The swap file is not optional. One gigabyte of RAM running Postgres, Node and
      * Caddy fits; a `docker pull` on top of them does not, and without swap the first
@@ -151,7 +187,10 @@ export class ComputeStack extends Stack {
       'chmod +x /usr/local/lib/docker/cli-plugins/docker-compose',
       // 2 GB of swap on a 1 GB instance.
       'if [ ! -f /swapfile ]; then dd if=/dev/zero of=/swapfile bs=1M count=2048 && chmod 600 /swapfile && mkswap /swapfile && swapon /swapfile && echo "/swapfile none swap sw 0 0" >> /etc/fstab; fi',
-      `mkdir -p /opt/${name.PROJECT} && chown ec2-user:ec2-user /opt/${name.PROJECT}`,
+      `mkdir -p /opt/${name.PROJECT}`,
+      writeFile(`/opt/${name.PROJECT}/compose.yml`, infraFile('compose.yml')),
+      writeFile(`/opt/${name.PROJECT}/Caddyfile`, infraFile('Caddyfile')),
+      `chown -R ec2-user:ec2-user /opt/${name.PROJECT}`,
       // Docker's logs are the only thing on this box that grows without limit.
       'printf \'{"log-driver":"json-file","log-opts":{"max-size":"10m","max-file":"3"}}\\n\' > /etc/docker/daemon.json',
       'systemctl restart docker',
