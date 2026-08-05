@@ -7,6 +7,7 @@ import { HTTP_STATUS } from './errors';
 import { errorHandler, notFoundHandler } from './middleware/errorHandler';
 import { createRateLimiter } from './middleware/rateLimit';
 import { requireAuth } from './middleware/requireAuth';
+import { requireRole } from './middleware/requireRole';
 import { createAuthRouter } from './routes/auth';
 import { createEmployeeRouter } from './routes/employees';
 import { createLookupRouter } from './routes/lookups';
@@ -96,7 +97,13 @@ export function createApp(options: AppOptions): Express {
 
   app.use(
     '/api/employees',
-    createEmployeeRouter({ employees: options.container.employees, requireAuth: authenticated }),
+    createEmployeeRouter({
+      employees: options.container.employees,
+      requireAuth: authenticated,
+      /* Read-only is the default for every other role, including HR Viewer.
+         Recording pay is the one thing on this router that writes. */
+      requireHrAdmin: requireRole('HR_ADMIN'),
+    }),
   );
 
   app.use(

@@ -1,7 +1,8 @@
 import { Router, type RequestHandler } from 'express';
 import { z } from 'zod';
 import { isValidIsoDate } from '../domain/dates';
-import { HTTP_STATUS } from '../errors';
+import { SUPPORTED_CURRENCIES } from '../domain/money';
+import { HTTP_STATUS, notFound } from '../errors';
 import { authContext } from '../middleware/requireAuth';
 import { EMPLOYEE_SORT_FIELDS } from '../repositories/employees';
 import { DEFAULT_PAGE_SIZE, PAGE_SIZES, type EmployeeService } from '../services/employees';
@@ -42,15 +43,47 @@ const listQuerySchema = z.object({
   status: z.enum(['ACTIVE', 'LEFT']).optional(),
   /* A real calendar day, not merely the right shape: 2026-02-31 would otherwise
      reach Postgres and be rejected there as a 500 instead of a 400. */
-  asOf: z
-    .string()
-    .refine(isValidIsoDate, 'asOf must be a date as YYYY-MM-DD.')
-    .optional(),
+  asOf: z.string().refine(isValidIsoDate, 'asOf must be a date as YYYY-MM-DD.').optional(),
+});
+
+/** A date on its own, for the endpoints that take nothing else. */
+const asOfSchema = z.object({
+  asOf: z.string().refine(isValidIsoDate, 'asOf must be a date as YYYY-MM-DD.').optional(),
+});
+
+/**
+ * `:id` from the path. Coerced and checked here so a request for
+ * /api/employees/abc is a 400 about the parameter rather than a database error
+ * about a failed cast.
+ */
+const idParamSchema = z.object({ id: z.coerce.number().int().positive() });
+
+/** A note on a raise, not an essay. Long enough for "Promotion to Senior, Q3 review". */
+const MAX_REASON_LENGTH = 500;
+
+/**
+ * A new salary.
+ *
+ * The amount is a **string**, deliberately. JSON numbers are doubles, so 85000.1
+ * arrives as 85000.099999999999 and a client cannot express an exact amount even
+ * when it has one. A string carries the digits the user typed, and
+ * `parseAmountToMinor` refuses anything that is not a clean two-decimal figure
+ * rather than rounding it into something plausible.
+ */
+const recordPaySchema = z.object({
+  /* Bounded so a rejection message, which quotes what was sent, cannot be made
+     into a payload by sending a very long one. No real amount is 32 characters. */
+  amount: z.string().trim().min(1, 'An amount is required.').max(32),
+  currency: z.enum(SUPPORTED_CURRENCIES),
+  effectiveFrom: z.string().refine(isValidIsoDate, 'effectiveFrom must be a date as YYYY-MM-DD.'),
+  reason: z.string().trim().max(MAX_REASON_LENGTH).optional(),
 });
 
 export interface EmployeeRouterDeps {
   employees: EmployeeService;
   requireAuth: RequestHandler;
+  /** Only HR Admin may write. Passed in so the router does not build its own guard. */
+  requireHrAdmin: RequestHandler;
 }
 
 export function createEmployeeRouter(deps: EmployeeRouterDeps): Router {
@@ -77,6 +110,52 @@ export function createEmployeeRouter(deps: EmployeeRouterDeps): Router {
     );
 
     res.status(HTTP_STATUS.OK).json(page);
+  });
+
+  router.get('/:id', deps.requireAuth, async (req, res) => {
+    const { id } = idParamSchema.parse(req.params);
+    const { asOf } = asOfSchema.parse(req.query);
+    const { role, employeeId } = authContext(req);
+
+    const detail = await deps.employees.findById(
+      { role, employeeId },
+      { id, ...(asOf === undefined ? {} : { asOf }) },
+    );
+
+    if (detail === null) {
+      /* 404 rather than 403, and the same message either way. A 403 on somebody
+         else's record confirms that the record exists — which is enough to walk
+         the ids and learn the shape of the company. */
+      throw notFound('No such employee.');
+    }
+
+    res.status(HTTP_STATUS.OK).json(detail);
+  });
+
+  router.post('/:id/compensation', deps.requireAuth, deps.requireHrAdmin, async (req, res) => {
+    const { id } = idParamSchema.parse(req.params);
+    const body = recordPaySchema.parse(req.body);
+    const { role, employeeId, userId } = authContext(req);
+
+    const detail = await deps.employees.recordPay(
+      { role, employeeId },
+      {
+        employeeId: id,
+        amount: body.amount,
+        currency: body.currency,
+        effectiveFrom: body.effectiveFrom,
+        ...(body.reason === undefined ? {} : { reason: body.reason }),
+        /* From the verified token, never from the body. A client that can name
+           its own author can sign somebody else's name to a pay change. */
+        recordedByUserId: userId,
+      },
+    );
+
+    if (detail === null) {
+      throw notFound('No such employee.');
+    }
+
+    res.status(HTTP_STATUS.OK).json(detail);
   });
 
   return router;
