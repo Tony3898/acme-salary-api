@@ -108,6 +108,28 @@ jobs:
           cache: npm
           cache-dependency-path: infra/package-lock.json
 
+      # TEMPORARY — delete once the first deploy succeeds.
+      #
+      # STS keeps answering "Not authorized to perform sts:AssumeRoleWithWebIdentity"
+      # while the trust policy looks correct, so this prints what the trust policy is
+      # actually being compared against. Only the `sub` and `aud` claims, which are the
+      # two the condition tests; the token itself is never printed.
+      - name: What does the OIDC token actually claim
+        run: |
+          set -euo pipefail
+          TOKEN=$(curl -sS -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+            "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=sts.amazonaws.com" | jq -r .value)
+
+          # The payload is the middle segment, base64url. Decoded and read, not logged whole.
+          CLAIMS=$(echo "$TOKEN" | cut -d. -f2 | tr '_-' '/+' | base64 -d 2>/dev/null || \
+                   echo "$TOKEN" | cut -d. -f2 | tr '_-' '/+' | base64 -d --ignore-garbage)
+
+          echo "sub = $(echo "$CLAIMS" | jq -r .sub)"
+          echo "aud = $(echo "$CLAIMS" | jq -r .aud)"
+          echo "iss = $(echo "$CLAIMS" | jq -r .iss)"
+          echo
+          echo "The trust policy must contain that exact sub, and that exact aud."
+
       - uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: arn:aws:iam::651025161973:role/GitHubActionsRole
