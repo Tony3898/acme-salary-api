@@ -193,3 +193,22 @@ silently mocked nothing, sixteen tests started running against a real hook, and 
 "useAuth was called outside AuthProvider" in a file that had not been touched. Both are the same shape —
 tooling that reports success when it has done nothing — and both are why the checks here assert on a
 positive signal rather than on the absence of a complaint.
+
+**And then the route inventory turned out to have its own version of it.** The file exists because
+hand-listed access-control tests cannot cover the endpoint nobody thought to list, so it discovers its
+subjects instead — and it shipped with three ways to report success while covering nothing. Discovery
+read only the top level of `src/routes`, so a router in a subdirectory was absent from both sides of the
+comparison and the assertion passed on two sets that agreed by omitting it; a route with no guard at all
+could ship green through the one test written to stop exactly that. The URLs were hand-written next to
+the classifications, so a wrong one produced a 404, and the two probes that asked only "not 403" and
+"not 401" counted that as the route being reachable. And the positive direction was probed as HR Admin
+alone, so the design's actual claim about the authenticated routes — open to every role, narrowed by
+the scope in SQL — was never tested from the bottom: a `requireRole` excluding Employee could be added
+to any of them and the suite would stay green. Each was demonstrated before it was fixed, by adding the
+thing it was supposed to catch and watching it pass. Discovery now walks subdirectories and keys on the
+path rather than the basename; the URLs are built from the mount prefix in `app.ts` and the path the
+router registers, so the table and the request cannot disagree; and every authenticated route is now
+probed as an Employee too. That last change immediately found something: an Employee asking for a person
+outside their scope gets a 404, not a 403, because a refusal must not confirm that somebody exists — so
+the probe had to use their own id, and the reason is now written next to it. Same shape as the
+`drizzle-kit --out` bug and the stale `vi.mock`. A check that has only ever passed is not evidence.

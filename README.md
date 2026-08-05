@@ -1,5 +1,7 @@
 # acme-salary-api
 
+[![CI](https://github.com/Tony3898/acme-salary-api/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/Tony3898/acme-salary-api/actions/workflows/ci.yml)
+
 Backend for ACME's salary management system: employee and salary records for ~10,000 people across
 several countries, plus the statistics an HR Manager currently rebuilds by hand in Excel.
 
@@ -11,9 +13,10 @@ React UI lives in a separate repo: **[acme-salary-web](https://github.com/Tony38
 
 1. **Open [acme.tejasrana.in](https://acme.tejasrana.in)** and sign in as `hr.admin@acme.test` /
    `AcmeDemo!2026`. The login page offers one click per account.
-2. **If that link is unreachable, watch [the walkthrough](docs/media/walkthrough.webm) instead** —
-   four minutes, captioned, no sound needed. It is a recording of the deployed app, and the script
-   that produced it is in the other repo.
+2. **Or watch it instead: [acme.tejasrana.in/case-study#walkthrough](https://acme.tejasrana.in/case-study#walkthrough)** —
+   four minutes, captioned, no sound needed, plays in the page. It is a recording of the deployed app,
+   and the script that produced it is in the other repo. That page is static and public, so it works
+   even in the hours the API server is stopped.
 3. **Sign in again as `manager@acme.test`.** Same password, same screens, their team only, and
    `/dashboard` refused. That is the one thing worth seeing twice.
 4. **Read [ai-prompts.md](docs/ai-prompts.md)** if you read one document. It is where AI helped, where
@@ -31,12 +34,12 @@ Everything below is depth for whoever wants it, not the price of entry.
 
 ## Live
 
-|                  |                                                                                  |
-| ---------------- | -------------------------------------------------------------------------------- |
-| Application      | **https://acme.tejasrana.in**                                                    |
-| Walkthrough      | [docs/media/walkthrough.webm](docs/media/walkthrough.webm) — if the site is down |
+|                  |                                                                                 |
+| ---------------- | ------------------------------------------------------------------------------- |
+| Application      | **https://acme.tejasrana.in**                                                   |
+| Walkthrough      | https://acme.tejasrana.in/case-study#walkthrough — 4 minutes, plays in the page  |
 | API              | https://acme.tejasrana.in/api — same origin, routed to this server by CloudFront |
-| Health           | https://acme.tejasrana.in/health                                                 |
+| Health           | https://acme.tejasrana.in/health                                                |
 | How it was built | https://acme.tejasrana.in/case-study — the decisions below, in one page          |
 
 Sign in with any of the [demo accounts](#demo-accounts). The server stops at 22:00 IST and starts

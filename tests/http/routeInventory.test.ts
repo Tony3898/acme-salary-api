@@ -1,4 +1,4 @@
-import { readdirSync } from 'node:fs';
+import { readFileSync, readdirSync } from 'node:fs';
 import type { Router } from 'express';
 import request from 'supertest';
 import { accessTokenFrom } from '../helpers/http';
@@ -49,99 +49,72 @@ type Access =
   | 'HR_ADMIN';
 
 interface RouteEntry {
-  /**
-   * The route as a URL, for the probe.
-   *
-   * The only thing an entry has to carry that its key does not: the key names the
-   * router and the path *within* it, and the mount prefix lives in `app.ts`. A wrong
-   * prefix here shows up as a 404 where the probe expected a 401, so it is checked by
-   * being used rather than by a second assertion about itself.
-   */
-  url: string;
   access: Access;
+  /**
+   * Set where a 404 is a legitimate answer, not a wrong URL.
+   *
+   * Every probe otherwise asserts the route was *reached*, because the whole point of
+   * deriving URLs below is that a request can no longer miss. Two routes address a pay
+   * band that the harness does not seed, so for them "no such thing" is the handler
+   * working and the assertion has to be given up — named here rather than dropped
+   * quietly, so the exception is a decision somebody made and not a gap.
+   */
+  absentIsFine?: true;
 }
 
 /**
  * Keyed by exactly what discovery produces, so a mismatch names the route.
  *
- * The ids in the URLs need not exist: every refusal being checked happens before a
- * handler looks anything up, which is the property that makes one table cover twenty
- * routes without twenty fixtures.
+ * The key is the router file's path **relative to `src/routes`**, not its basename:
+ * discovery walks subdirectories, and two files called `bands.ts` in different folders
+ * would otherwise collide into one entry and hide a route behind another route's
+ * classification.
+ *
+ * There are no URLs here. They are built from the mount prefix in `app.ts` and the path
+ * the router itself registers, so a table entry and the request that tests it cannot
+ * disagree — see `discoverRoutes`.
  */
 const INVENTORY: Record<string, RouteEntry> = {
-  'auth.ts POST /login': { url: '/api/auth/login', access: 'PUBLIC' },
-  'auth.ts POST /refresh': {
-    url: '/api/auth/refresh',
-    access: 'REFRESH_COOKIE',
-  },
+  'auth.ts POST /login': { access: 'PUBLIC' },
+  'auth.ts POST /refresh': { access: 'REFRESH_COOKIE' },
   /* Public on purpose, and it reads oddly until you try the alternative. Logging out
      with an expired token would then fail — leaving the cookie in place and the user
      signed in to a session they asked to end. It succeeds whatever is presented, and
      revokes whatever it was given. */
-  'auth.ts POST /logout': {
-    url: '/api/auth/logout',
-    access: 'PUBLIC',
-  },
-  'auth.ts GET /me': { url: '/api/auth/me', access: 'AUTHENTICATED' },
+  'auth.ts POST /logout': { access: 'PUBLIC' },
+  'auth.ts GET /me': { access: 'AUTHENTICATED' },
 
-  'bands.ts GET /': { url: '/api/bands', access: 'HR' },
-  'bands.ts PUT /:jobLevelId/:country': {
-    url: '/api/bands/1/GB',
-    access: 'HR_ADMIN',
-  },
-  'bands.ts DELETE /:jobLevelId/:country': {
-    url: '/api/bands/1/GB',
-    access: 'HR_ADMIN',
-  },
+  'bands.ts GET /': { access: 'HR' },
+  'bands.ts PUT /:jobLevelId/:country': { access: 'HR_ADMIN', absentIsFine: true },
+  'bands.ts DELETE /:jobLevelId/:country': { access: 'HR_ADMIN', absentIsFine: true },
 
-  'bulkRaise.ts POST /': { url: '/api/compensation/bulk', access: 'HR_ADMIN' },
+  'bulkRaise.ts POST /': { access: 'HR_ADMIN' },
 
   /* Any signed-in user, because the export is the list they are already looking at
      with the paging removed — same filters, same scope, so a Manager's file contains
      their team and nobody else. Restricting it to HR would mean the screen and the
      file disagreed about who may see what, and the version somebody trusts is
      whichever they used last. */
-  'employeeCsv.ts GET /export': {
-    url: '/api/employees/export',
-    access: 'AUTHENTICATED',
-  },
-  'employeeCsv.ts POST /import': {
-    url: '/api/employees/import',
-    access: 'HR_ADMIN',
-  },
+  'employeeCsv.ts GET /export': { access: 'AUTHENTICATED' },
+  'employeeCsv.ts POST /import': { access: 'HR_ADMIN' },
 
-  'employees.ts GET /': { url: '/api/employees', access: 'AUTHENTICATED' },
-  'employees.ts POST /': { url: '/api/employees', access: 'HR_ADMIN' },
+  'employees.ts GET /': { access: 'AUTHENTICATED' },
+  'employees.ts POST /': { access: 'HR_ADMIN' },
   /* Authenticated rather than HR: it is a list of people, so the scope narrows it the
      same way the main list is narrowed, and a Manager seeing their own team's gaps to
      band is the feature working. */
-  'employees.ts GET /attention': {
-    url: '/api/employees/attention',
-    access: 'AUTHENTICATED',
-  },
-  'employees.ts GET /:id': { url: '/api/employees/1', access: 'AUTHENTICATED' },
-  'employees.ts PATCH /:id/status': {
-    url: '/api/employees/1/status',
-    access: 'HR_ADMIN',
-  },
-  'employees.ts POST /:id/compensation': {
-    url: '/api/employees/1/compensation',
-    access: 'HR_ADMIN',
-  },
+  'employees.ts GET /attention': { access: 'AUTHENTICATED' },
+  'employees.ts GET /:id': { access: 'AUTHENTICATED' },
+  'employees.ts PATCH /:id/status': { access: 'HR_ADMIN' },
+  'employees.ts POST /:id/compensation': { access: 'HR_ADMIN' },
 
   /* Departments, levels, countries, currencies. Reference data with nobody's name in
      it, so any signed-in user may read it — the filters on their own page need it. */
-  'lookups.ts GET /': { url: '/api/lookups', access: 'AUTHENTICATED' },
+  'lookups.ts GET /': { access: 'AUTHENTICATED' },
 
-  'statistics.ts GET /overview': {
-    url: '/api/stats/overview',
-    access: 'HR',
-  },
-  'statistics.ts GET /payroll-trend': {
-    url: '/api/stats/payroll-trend',
-    access: 'HR',
-  },
-  'statistics.ts GET /pay-gap': { url: '/api/stats/pay-gap', access: 'HR' },
+  'statistics.ts GET /overview': { access: 'HR' },
+  'statistics.ts GET /payroll-trend': { access: 'HR' },
+  'statistics.ts GET /pay-gap': { access: 'HR' },
 };
 
 interface RouteLayer {
@@ -157,20 +130,56 @@ function isSupportedMethod(method: string | undefined): method is SupportedMetho
   return SUPPORTED_METHODS.includes(method as never);
 }
 
+/** A route as discovered: where it is written, and the URL that actually reaches it. */
+interface DiscoveredRoute {
+  method: SupportedMethod;
+  /** `/api/employees/:id` — the mount prefix and the router's own path, joined. */
+  template: string;
+}
+
+/**
+ * Where each router is mounted, read out of `app.ts` rather than written down twice.
+ *
+ * The prefix is the half of a URL that lives outside the router, so a table here would
+ * be a second copy of it — and the failure a second copy produces is the quiet one:
+ * the request goes somewhere that does not exist, the response is a 404, and a probe
+ * asking only "not 403" counts that as the route being reachable.
+ *
+ * Matched off the source because a mounted Express router does not remember the string
+ * it was mounted with — only a compiled matcher. Reading `app.use('<prefix>',
+ * create<X>Router(` gives the mapping directly, and a router mounted some other way
+ * fails loudly below rather than silently going unprobed.
+ */
+function mountPrefixes(): Map<string, string> {
+  const source = readFileSync('src/app.ts', 'utf8');
+  const mounts = source.matchAll(/app\.use\(\s*'([^']+)',\s*(create\w*Router)\(/g);
+
+  return new Map([...mounts].map(([, prefix, factory]) => [factory as string, prefix as string]));
+}
+
 /**
  * Every route registered by every router module, found rather than listed.
+ *
+ * Recursive on purpose. Reading only the top level of `src/routes` meant a router in a
+ * subdirectory was never discovered, so it was never missing from the inventory either
+ * — the comparison below was between two sets that both left it out, and it passed. A
+ * route with no guard at all could ship green through the one test written to stop it.
  *
  * The dependencies are a proxy handing back a no-op for whatever is asked of it.
  * Nothing is called — the routers are built only to be read — so a stub that
  * satisfies every shape is exactly as much as this needs, and means a new dependency
  * on a router does not become a change here.
  */
-async function discoverRoutes(): Promise<Set<string>> {
-  const found = new Set<string>();
+async function discoverRoutes(): Promise<Map<string, DiscoveredRoute>> {
+  const found = new Map<string, DiscoveredRoute>();
   const noop = (): void => undefined;
   const stubDeps: unknown = new Proxy({}, { get: () => noop });
+  const prefixes = mountPrefixes();
 
-  const files = readdirSync('src/routes')
+  /* `recursive` returns paths with the platform's separator. Normalised to `/` so the
+     keys are the same on every machine, and so they read as the paths they are. */
+  const files = readdirSync('src/routes', { recursive: true })
+    .map((entry) => String(entry).replaceAll('\\', '/'))
     .filter((file) => file.endsWith('.ts'))
     .sort();
 
@@ -182,20 +191,43 @@ async function discoverRoutes(): Promise<Set<string>> {
     const factory = Object.entries(module).find(
       (entry): entry is [string, (deps: unknown) => Router] =>
         typeof entry[1] === 'function' && /^create.*Router$/.test(entry[0]),
-    )?.[1];
+    );
 
     // schemas.ts and anything else shared: no routes to classify.
     if (factory === undefined) {
       continue;
     }
 
-    const router = factory(stubDeps);
+    const [factoryName, build] = factory;
+    const prefix = prefixes.get(factoryName);
+
+    const router = build(stubDeps);
     for (const layer of (router as unknown as { stack: RouteLayer[] }).stack) {
       if (layer.route === undefined) {
         continue;
       }
       for (const method of Object.keys(layer.route.methods ?? {})) {
-        found.add(`${file} ${method.toUpperCase()} ${layer.route.path}`);
+        if (!isSupportedMethod(method)) {
+          throw new Error(
+            `${file} registers ${method.toUpperCase()}, which nothing here can send.`,
+          );
+        }
+
+        /* A router file that `app.ts` never mounts is unreachable today and one line
+           from being reachable tomorrow, so it is a failure rather than a skip — and
+           the key is still recorded, so the inventory comparison names it too. */
+        if (prefix === undefined) {
+          throw new Error(
+            `${file} exports ${factoryName}, which app.ts never mounts. Mount it or delete it.`,
+          );
+        }
+
+        // `/api/bands` + `/` is `/api/bands`, not `/api/bands/`.
+        const path = layer.route.path === '/' ? '' : layer.route.path;
+        found.set(`${file} ${method.toUpperCase()} ${layer.route.path}`, {
+          method,
+          template: `${prefix}${path}`,
+        });
       }
     }
   }
@@ -205,14 +237,29 @@ async function discoverRoutes(): Promise<Set<string>> {
 
 describe('every endpoint is classified and the classification holds', () => {
   let harness: TestHarness;
-  let discovered: Set<string>;
+  let discovered: Map<string, DiscoveredRoute>;
+  let paramValues: Record<string, string>;
   const tokens = new Map<string, string>();
 
   beforeAll(async () => {
     harness = await createTestHarness();
     discovered = await discoverRoutes();
 
-    for (const email of ['hr.admin@acme.test', 'hr.viewer@acme.test', 'manager@acme.test']) {
+    /* A real id, not `1`. `/api/employees/:id` answers 404 for somebody who does not
+       exist, and that is correct — which is why the probes below could not tell a
+       missing person from a missing route until the id pointed at a seeded one. */
+    paramValues = {
+      id: String(harness.accounts.manager.employeeId),
+      jobLevelId: '1',
+      country: 'GB',
+    };
+
+    for (const email of [
+      'hr.admin@acme.test',
+      'hr.viewer@acme.test',
+      'manager@acme.test',
+      'employee@acme.test',
+    ]) {
       const login = await request(harness.app)
         .post('/api/auth/login')
         .send({ email, password: TEST_PASSWORD });
@@ -227,32 +274,46 @@ describe('every endpoint is classified and the classification holds', () => {
   /**
    * The request an entry describes, with or without a session.
    *
-   * The method comes out of the key, which is the only place it is written down. Narrowed
-   * against supertest's own method names rather than indexed with a cast, so a key with a
-   * verb nobody supports fails here instead of at `undefined is not a function`.
+   * Method and URL both come from discovery, so neither is written down twice and a
+   * probe cannot be pointed at a URL the application does not serve.
    */
-  const send = (entry: RouteEntry, key: string, token?: string): request.Test => {
-    const method = key.split(' ')[1]?.toLowerCase();
-    if (!isSupportedMethod(method)) {
-      throw new Error(`Unsupported method in ${key}.`);
+  const send = (key: string, token?: string, params: Record<string, string> = {}): request.Test => {
+    const route = discovered.get(key);
+    if (route === undefined) {
+      throw new Error(`${key} is in the inventory but no router registers it.`);
     }
 
-    const test = request(harness.app)[method](entry.url);
+    const url = route.template.replaceAll(/:(\w+)/g, (_match, name: string) => {
+      const value = params[name] ?? paramValues[name];
+      if (value === undefined) {
+        throw new Error(`No value for :${name} in ${route.template}. Add one to paramValues.`);
+      }
+      return value;
+    });
+
+    const test = request(harness.app)[route.method](url);
     return token === undefined ? test : test.set('Authorization', `Bearer ${token}`);
+  };
+
+  /** Every probe that expects to be *answered* also expects to have arrived somewhere. */
+  const expectReached = (status: number, entry: RouteEntry): void => {
+    if (entry.absentIsFine !== true) {
+      expect(status).not.toBe(404);
+    }
   };
 
   it('given the routers as they are registered, when they are read, then every route is in the inventory', () => {
     /* Both directions. A route missing from the table is an endpoint nobody has
        classified; a table entry with no route is a rule about something that no
        longer exists, which is worse than no rule because it reads like cover. */
-    expect([...discovered].sort()).toEqual(Object.keys(INVENTORY).sort());
+    expect([...discovered.keys()].sort()).toEqual(Object.keys(INVENTORY).sort());
   });
 
   describe('without a session', () => {
     const entries = Object.entries(INVENTORY).filter(([, entry]) => entry.access !== 'PUBLIC');
 
-    it.each(entries)('given no token, when %s is called, then it is 401', async (key, entry) => {
-      const response = await send(entry, key);
+    it.each(entries)('given no token, when %s is called, then it is 401', async (key) => {
+      const response = await send(key);
 
       expect(response.status).toBe(401);
     });
@@ -265,8 +326,8 @@ describe('every endpoint is classified and the classification holds', () => {
 
     it.each(entries)(
       'given an access token instead of the cookie, when %s is called, then it is refused',
-      async (key, entry) => {
-        const response = await send(entry, key, tokens.get('manager@acme.test'));
+      async (key) => {
+        const response = await send(key, tokens.get('manager@acme.test'));
 
         expect(response.status).toBe(401);
       },
@@ -280,8 +341,8 @@ describe('every endpoint is classified and the classification holds', () => {
 
     it.each(entries)(
       'given a Manager token, when %s is called, then it is refused',
-      async (key, entry) => {
-        const response = await send(entry, key, tokens.get('manager@acme.test'));
+      async (key) => {
+        const response = await send(key, tokens.get('manager@acme.test'));
 
         expect(response.status).toBe(403);
       },
@@ -293,11 +354,11 @@ describe('every endpoint is classified and the classification holds', () => {
 
     it.each(entries)(
       'given a read-only HR token, when %s is called, then the write is refused',
-      async (key, entry) => {
+      async (key) => {
         /* The role that is easiest to get wrong: it can see everything, so a guard
            written as "is this HR?" passes it, and a read-only account gets to change
            somebody's salary. */
-        const response = await send(entry, key, tokens.get('hr.viewer@acme.test'));
+        const response = await send(key, tokens.get('hr.viewer@acme.test'));
 
         expect(response.status).toBe(403);
       },
@@ -314,12 +375,42 @@ describe('every endpoint is classified and the classification holds', () => {
       async (key, entry) => {
         /* The other direction, and the reason the table cannot be satisfied by
            guarding everything: a route nobody can reach passes every test above.
-           The bodies here are empty and most of these answer 400 or 404 — what
-           matters is that none of them answers 403. */
-        const response = await send(entry, key, tokens.get('hr.admin@acme.test'));
+           The bodies here are empty and most of these answer 400 — what matters is
+           that none of them answers 403, and that the request arrived at all. */
+        const response = await send(key, tokens.get('hr.admin@acme.test'));
 
         expect(response.status).not.toBe(403);
         expect(response.status).not.toBe(401);
+        expectReached(response.status, entry);
+      },
+    );
+  });
+
+  describe('as an Employee', () => {
+    const entries = Object.entries(INVENTORY).filter(
+      ([, entry]) => entry.access === 'AUTHENTICATED',
+    );
+
+    it.each(entries)(
+      'given an Employee token, when %s is called, then it is reached rather than refused',
+      async (key, entry) => {
+        /* The claim "AUTHENTICATED" makes is that these are open to every role and the
+           scope narrows them in SQL — a Manager gets their team, an Employee gets
+           themselves. Probing only as HR Admin leaves that claim untested from the
+           bottom: a `requireRole` excluding Employee could be added to any of these and
+           every other test here would still pass. This is the assertion that would not.
+
+           Their own id, because the scope answers 404 rather than 403 for a person
+           outside it — deliberately, so a refusal does not confirm that somebody
+           exists. Probing with the manager's id would make that correct 404 look
+           like the unreachable route this is trying to detect. */
+        const response = await send(key, tokens.get('employee@acme.test'), {
+          id: String(harness.accounts.employee.employeeId),
+        });
+
+        expect(response.status).not.toBe(401);
+        expect(response.status).not.toBe(403);
+        expectReached(response.status, entry);
       },
     );
   });
@@ -333,9 +424,10 @@ describe('every endpoint is classified and the classification holds', () => {
         /* So "PUBLIC" in the table above means something. Without this, moving a
            route to that classification would be a way to make its row stop being
            checked at all. */
-        const response = await send(entry, key);
+        const response = await send(key);
 
         expect(response.status).not.toBe(401);
+        expectReached(response.status, entry);
       },
     );
   });

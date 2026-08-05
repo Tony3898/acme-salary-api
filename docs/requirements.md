@@ -66,25 +66,8 @@ route back in — third column.
 | A general audit log over every field | Pay changes are fully tracked. Changing a department, manager or level overwrites the column.                 | A trigger-written history table. Worth doing when someone needs "who moved this person to Sales", which nothing here asks.             |
 | Interview scheduling, leave, budgets | A wider HR system, not salary management.                                                                     | Each is a self-contained slice reusing the access-scope function and the dated-record pattern. See [design-notes.md](design-notes.md). |
 
-## Reasoning behind the main choices
+---
 
-**Salary history instead of a salary column.** Every salary is a dated record; the current one is the
-most recent that has started. A single editable number loses the past on every raise, and the past is
-what most of the questions above are about. This one decision also gives the audit trail and the
-"as of any date" view for free.
-
-**Money as whole cents, never decimals.** Decimal arithmetic in software is imprecise — adding 10,000
-salaries drifts. Amounts are integers of the currency's minor unit, with a currency code alongside.
-
-**Two separate ways to look at pay.** "What does this cost us?" converts to USD. "Is this person paid
-fairly?" compares them to their **local** band in their own currency, never across countries — a
-Bangalore engineer next to a San Francisco one looks underpaid in USD but is not, because pay is set
-locally. Conflating the two produces confident wrong answers, so they are kept apart in the UI.
-
-**Statistics computed in the database.** Medians, percentiles and distributions run over the whole
-10,000 rows; sending that to the browser to aggregate is slow and gives every client a chance to
-disagree. Postgres computes them and returns a handful of numbers.
-
-**Access control at the data layer.** One function answers "which employees can this user see?" and
-every read path applies it. Checks on routes alone stop people _changing_ things, but a Manager could
-still open a dashboard and read company-wide averages — that is only reading.
+The reasoning behind each of these — and what each one costs — is in
+[design-notes.md](design-notes.md). It is deliberately not repeated here: this page is what was
+decided, that one is why.
