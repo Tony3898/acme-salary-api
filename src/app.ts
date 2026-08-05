@@ -11,6 +11,7 @@ import { requireRole } from './middleware/requireRole';
 import { createAuthRouter } from './routes/auth';
 import { createEmployeeRouter } from './routes/employees';
 import { createLookupRouter } from './routes/lookups';
+import { createStatisticsRouter } from './routes/statistics';
 
 /**
  * Builds the HTTP layer around an already-built container.
@@ -109,6 +110,14 @@ export function createApp(options: AppOptions): Express {
   app.use(
     '/api/lookups',
     createLookupRouter({ lookups: options.container.lookups, requireAuth: authenticated }),
+  );
+
+  app.use(
+    '/api/stats',
+    createStatisticsRouter({
+      statistics: options.container.statistics,
+      requireAuth: authenticated,
+    }),
   );
 
   // Last: an unmatched URL is a 404 in the same shape as any other failure.

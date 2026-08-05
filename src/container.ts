@@ -3,6 +3,7 @@ import type { Database, DatabaseHandle } from './db/database';
 import { createAuthService, type AuthService } from './services/auth';
 import { createEmployeeService, type EmployeeService } from './services/employees';
 import { createLookupService, type LookupService } from './services/lookups';
+import { createStatisticsService, type StatisticsService } from './services/statistics';
 
 /**
  * The composition root: one connection pool and one instance of each service,
@@ -52,6 +53,7 @@ export interface Container {
   readonly auth: AuthService;
   readonly employees: EmployeeService;
   readonly lookups: LookupService;
+  readonly statistics: StatisticsService;
   /** Releases everything the container opened. Called once, on shutdown. */
   close: () => Promise<void>;
 }
@@ -80,11 +82,14 @@ export function createContainer(
     ttlMs: overrides.lookupTtlMs,
   });
 
+  const statistics = createStatisticsService({ db: database.db, now });
+
   return {
     db: database.db,
     auth,
     employees,
     lookups,
+    statistics,
     close: () => database.close(),
   };
 }
