@@ -73,7 +73,9 @@ describe('listEmployees', () => {
 
   it('given a rate exists, when listed, then the same query succeeds', async () => {
     // The other side of it: the failure above is about the missing rate, nothing else.
-    await db.insert(fxRates).values({ currency: 'EUR', rateToUsd: '1.08000000', asOf: '2026-08-01' });
+    await db
+      .insert(fxRates)
+      .values({ currency: 'EUR', rateToUsd: '1.08000000', asOf: '2026-08-01' });
 
     const { rows, total } = await listEmployees(db, { ...baseQuery, scope: { kind: 'ALL' } });
 

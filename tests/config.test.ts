@@ -43,7 +43,10 @@ describe('parseConfig', () => {
   });
 
   it('given only the required values, when parsed, then defaults apply', () => {
-    const config = parseConfig({ DATABASE_URL: 'postgresql://localhost:5432/acme', JWT_SECRET: A_VALID_SECRET });
+    const config = parseConfig({
+      DATABASE_URL: 'postgresql://localhost:5432/acme',
+      JWT_SECRET: A_VALID_SECRET,
+    });
 
     expect(config.NODE_ENV).toBe('development');
     expect(config.PORT).toBe(3000);
@@ -76,7 +79,10 @@ describe('parseConfig', () => {
 
   it('given a returned config, when a value is reassigned, then it does not change', () => {
     // Frozen so no module can quietly repoint the database mid-process.
-    const config = parseConfig({ DATABASE_URL: 'postgresql://localhost:5432/acme', JWT_SECRET: A_VALID_SECRET });
+    const config = parseConfig({
+      DATABASE_URL: 'postgresql://localhost:5432/acme',
+      JWT_SECRET: A_VALID_SECRET,
+    });
 
     expect(() => {
       (config as { PORT: number }).PORT = 9999;

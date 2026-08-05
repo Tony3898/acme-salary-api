@@ -3,6 +3,14 @@ import { accessScopeFor, canSeeAggregates, type ScopeSubject } from '../domain/a
 import { toIsoDate } from '../domain/dates';
 import { forbidden } from '../errors';
 import {
+  computePayrollTrend,
+  DEFAULT_HISTORY_MONTHS,
+  DEFAULT_HORIZON_MONTHS,
+  MAX_HISTORY_MONTHS,
+  MAX_HORIZON_MONTHS,
+  type PayrollTrendPoint,
+} from '../repositories/payrollTrend';
+import {
   computeStatistics,
   MIN_GROUP_FOR_MEDIAN,
   type StatisticsResult,
@@ -35,8 +43,29 @@ export interface StatisticsServiceDeps {
   now: () => Date;
 }
 
+export interface PayrollTrendRequest {
+  asOf?: string;
+  historyMonths?: number;
+  horizonMonths?: number;
+}
+
+export interface PayrollTrendResult {
+  asOf: string;
+  months: PayrollTrendPoint[];
+  /**
+   * What the pay changes already signed off will add to the monthly bill by the
+   * end of the horizon, against this month. Zero when nothing is scheduled.
+   */
+  committedChangeUsdMinor: number;
+}
+
 export interface StatisticsService {
   overview: (subject: ScopeSubject, request: StatisticsRequest) => Promise<StatisticsOverview>;
+  /** Payroll month by month, and what is already committed beyond today. */
+  payrollTrend: (
+    subject: ScopeSubject,
+    request: PayrollTrendRequest,
+  ) => Promise<PayrollTrendResult>;
 }
 
 export function createStatisticsService(deps: StatisticsServiceDeps): StatisticsService {
@@ -86,5 +115,55 @@ export function createStatisticsService(deps: StatisticsServiceDeps): Statistics
 
       return { ...statistics, asOf, minimumGroupForMedian: MIN_GROUP_FOR_MEDIAN };
     },
+
+    async payrollTrend(
+      subject: ScopeSubject,
+      request: PayrollTrendRequest,
+    ): Promise<PayrollTrendResult> {
+      // The same gate as the overview: a payroll total is a company-wide figure.
+      if (!canSeeAggregates(accessScopeFor(subject))) {
+        throw forbidden('Company-wide figures are available to HR roles only.');
+      }
+
+      const asOf = request.asOf ?? toIsoDate(deps.now());
+      const historyMonths = bounded(
+        request.historyMonths ?? DEFAULT_HISTORY_MONTHS,
+        MAX_HISTORY_MONTHS,
+      );
+      /* A horizon of zero is history on its own, which is a fair thing to ask
+         for — so unlike the history window it is allowed to be empty. */
+      const horizonMonths = bounded(
+        request.horizonMonths ?? DEFAULT_HORIZON_MONTHS,
+        MAX_HORIZON_MONTHS,
+        0,
+      );
+
+      const months = await computePayrollTrend(deps.db, { asOf, historyMonths, horizonMonths });
+
+      return { asOf, months, committedChangeUsdMinor: committedChange(months) };
+    },
   };
+}
+
+/** A window somebody asked for, kept inside what the chart can draw and the database should scan. */
+function bounded(value: number, maximum: number, minimum = 1): number {
+  return Math.min(Math.max(Math.trunc(value), minimum), maximum);
+}
+
+/**
+ * The difference between this month and the last committed one.
+ *
+ * Reported separately because it is the number worth acting on: it is money
+ * already promised, and it is the one figure on the dashboard that is not
+ * visible anywhere else in the product.
+ */
+function committedChange(months: readonly PayrollTrendPoint[]): number {
+  const actual = months.filter((point) => point.kind === 'ACTUAL');
+  const current = actual.at(-1);
+  const last = months.at(-1);
+
+  if (current === undefined || last === undefined || last.kind !== 'COMMITTED') {
+    return 0;
+  }
+  return last.payrollUsdMinor - current.payrollUsdMinor;
 }

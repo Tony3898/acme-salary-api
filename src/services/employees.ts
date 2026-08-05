@@ -7,9 +7,12 @@ import { AppError, HTTP_STATUS } from '../errors';
 import { logger } from '../logger';
 import {
   countDirectReports,
+  emailIsTaken,
   findEmployeeById,
+  findMissingReferences,
   hasIdenticalCompensationRecord,
   insertCompensationRecord,
+  insertEmployee,
   listCompensationHistory,
   listEmployees,
   type CompensationHistoryEntry,
@@ -104,6 +107,34 @@ export interface EmployeeService {
    * the database says, not what the client assumed the change would do.
    */
   recordPay: (subject: ScopeSubject, request: RecordPayRequest) => Promise<EmployeeDetail | null>;
+  /** Adds somebody, and returns their record as it now reads. */
+  create: (subject: ScopeSubject, request: CreateEmployeeRequest) => Promise<EmployeeDetail>;
+}
+
+export interface CreateEmployeeRequest {
+  fullName: string;
+  email: string;
+  country: string;
+  departmentId: number;
+  jobLevelId: number;
+  jobTitle?: string;
+  hireDate: string;
+  managerId?: number;
+  status?: 'ACTIVE' | 'LEFT';
+  /**
+   * What they start on, if it is known. Optional because a record is often
+   * created before the offer is signed off, and an invented starting salary is
+   * worse than a gap the list can show as "not recorded".
+   */
+  startingPay?: {
+    /** A canonical decimal string: "85000.50". Parsed, never floated. */
+    amount: string;
+    currency: Currency;
+    /** Defaults to the hire date, which is when the salary starts by definition. */
+    effectiveFrom?: string;
+  };
+  /** The account creating it, from the verified token rather than the body. */
+  createdByUserId: number;
 }
 
 export interface RecordPayRequest {
@@ -158,12 +189,16 @@ export function createEmployeeService(deps: EmployeeServiceDeps): EmployeeServic
       return null;
     }
 
-    /* Only after the scope has allowed the record. Fetching the history first
+    /* Only after the scope has allowed the record — fetching the history first
        and filtering afterwards would read one person's pay to decide whether to
-       show it to somebody else. */
-    const records = await listCompensationHistory(deps.db, id);
+       show it to somebody else. The two reads *after* that gate are independent
+       of each other, so they go together: three round trips became two, and
+       neither tells the other anything. */
+    const [records, directReports] = await Promise.all([
+      listCompensationHistory(deps.db, id),
+      countDirectReports(deps.db, id),
+    ]);
     const currentIndex = currentRecordIndex(records, asOf);
-    const directReports = await countDirectReports(deps.db, id);
 
     const history = withChanges(records).map((entry, index) => ({
       ...entry,
@@ -273,5 +308,112 @@ export function createEmployeeService(deps: EmployeeServiceDeps): EmployeeServic
 
       return findDetail(subject, request.employeeId, today);
     },
+
+    async create(subject: ScopeSubject, request: CreateEmployeeRequest): Promise<EmployeeDetail> {
+      /* Lower-cased once, here, because the unique index is on lower(email) and
+         because an address that differs only in capitalisation is the same
+         address. Storing what was typed and searching for something else is how
+         a duplicate gets in. */
+      const email = request.email.trim().toLowerCase();
+      const managerId = request.managerId ?? null;
+
+      /* Both checks at once — they ask different tables and neither depends on
+         the other's answer. The *order the failures are reported in* is still
+         chosen rather than incidental: a duplicate address is the mistake
+         somebody actually made, where a missing department usually means a
+         dropdown went stale under them, so the email wins when both are wrong. */
+      const [taken, missing] = await Promise.all([
+        emailIsTaken(deps.db, email),
+        findMissingReferences(deps.db, {
+          departmentId: request.departmentId,
+          jobLevelId: request.jobLevelId,
+          managerId,
+        }),
+      ]);
+
+      if (taken) {
+        throw new AppError(
+          HTTP_STATUS.BAD_REQUEST,
+          'INVALID_REQUEST',
+          'Somebody already has that email address.',
+        );
+      }
+
+      /* Named individually. "Invalid request" for a stale dropdown option tells
+         whoever is filling the form nothing about which field to look at. */
+      if (missing.department) {
+        throw invalidReference('department');
+      }
+      if (missing.jobLevel) {
+        throw invalidReference('job level');
+      }
+      if (missing.manager) {
+        throw invalidReference('manager');
+      }
+
+      const pay = request.startingPay;
+      const effectiveFrom = pay?.effectiveFrom ?? request.hireDate;
+
+      if (pay !== undefined && effectiveFrom < request.hireDate) {
+        throw new AppError(
+          HTTP_STATUS.BAD_REQUEST,
+          'INVALID_REQUEST',
+          `A salary cannot start before the hire date of ${request.hireDate}.`,
+        );
+      }
+
+      const id = await insertEmployee(
+        deps.db,
+        {
+          fullName: request.fullName,
+          email,
+          country: request.country,
+          departmentId: request.departmentId,
+          jobLevelId: request.jobLevelId,
+          jobTitle: request.jobTitle ?? null,
+          hireDate: request.hireDate,
+          managerId,
+          status: request.status ?? 'ACTIVE',
+        },
+        pay === undefined
+          ? null
+          : {
+              amountMinor: parseAmount(pay.amount),
+              currency: pay.currency,
+              effectiveFrom,
+              reason: 'Hired',
+              createdBy: request.createdByUserId,
+            },
+      );
+
+      logger.info('employee.created', {
+        employeeId: id,
+        country: request.country,
+        departmentId: request.departmentId,
+        jobLevelId: request.jobLevelId,
+        withStartingPay: pay !== undefined,
+        createdByUserId: request.createdByUserId,
+        /* No name, no email, no amount. An operator debugging a failed write
+           does not need to know who was hired or on what. */
+      });
+
+      const detail = await findDetail(subject, id, toIsoDate(deps.now()));
+      if (detail === null) {
+        /* Only reachable if the caller's scope excludes what they just created,
+           which HR Admin's does not. A 500 is right: it would mean the guard on
+           this route and the scope disagree. */
+        throw new Error(`Created employee ${String(id)} is not visible to its creator.`);
+      }
+      return detail;
+    },
   };
+}
+
+/** A dropdown option that no longer exists, or an id somebody typed by hand. */
+function invalidReference(field: string): AppError {
+  return new AppError(
+    HTTP_STATUS.BAD_REQUEST,
+    'INVALID_REQUEST',
+    `That ${field} does not exist. It may have been removed since this page loaded.`,
+  );
 }

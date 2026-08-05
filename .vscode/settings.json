@@ -1,0 +1,15 @@
+{
+  // Committed, so the editor agrees with `npm run lint` for anyone who opens
+  // this repo. The parent folder carries the same setting for the case where
+  // both repos are opened as one workspace — there the extension would
+  // otherwise run from a directory with no ESLint config and no TypeScript
+  // program, and report every imported type as unresolvable.
+  "eslint.workingDirectories": [{ "mode": "auto" }],
+
+  // The version in this repo's lockfile, not whichever one the editor ships.
+  "typescript.tsdk": "node_modules/typescript/lib",
+
+  "editor.formatOnSave": true,
+  "editor.defaultFormatter": "esbenp.prettier-vscode",
+  "editor.codeActionsOnSave": { "source.fixAll.eslint": "explicit" }
+}

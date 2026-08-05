@@ -1,5 +1,11 @@
 import { sql } from 'drizzle-orm';
-import { compensationRecords, employees, jobLevels, salaryBands, users } from '../../../src/db/schema';
+import {
+  compensationRecords,
+  employees,
+  jobLevels,
+  salaryBands,
+  users,
+} from '../../../src/db/schema';
 import { seed } from '../../../src/db/seed/seed';
 import { useTestDatabases, type TestDb } from '../../helpers/testDb';
 

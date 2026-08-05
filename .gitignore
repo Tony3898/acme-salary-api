@@ -30,6 +30,10 @@ yarn-error.log*
 # Editors and OS
 .vscode/*
 !.vscode/extensions.json
+# Shared so the editor lints the same way the command line does — without
+# this the extension runs from the wrong directory in a multi-project window
+# and reports every imported type as unresolvable.
+!.vscode/settings.json
 .idea/
 .DS_Store
 Thumbs.db

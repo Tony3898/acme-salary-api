@@ -248,7 +248,9 @@ export async function seedOrg(db: TestDb, managerEmployeeId: number): Promise<Se
       noPay: required('never.paid@acme.test'),
     },
     filler: people
-      .filter((person) => person.email.startsWith('filler') || person.email === 'fifty.percent@acme.test')
+      .filter(
+        (person) => person.email.startsWith('filler') || person.email === 'fifty.percent@acme.test',
+      )
       .map((person) => required(person.email)),
     byEmail,
     totalEmployees: 2 + people.length,

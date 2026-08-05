@@ -1,5 +1,11 @@
 import { sql, type SQL } from 'drizzle-orm';
 import { rawRows, type Database } from '../db/database';
+import {
+  employeeFilterConditions,
+  statusCondition,
+  whereFrom,
+  type StatusFilter,
+} from './employeeFilters';
 
 /**
  * How ACME pays people, answered by the database.
@@ -33,7 +39,7 @@ export interface StatisticsQuery {
   /** Pay as it stood on this day. */
   asOf: string;
   /** Defaults to the people currently employed; see the note in the service. */
-  status: 'ACTIVE' | 'LEFT' | 'ALL';
+  status: StatusFilter;
   country?: string;
   departmentId?: number;
   jobLevelId?: number;
@@ -118,26 +124,6 @@ interface RawStatisticsRow {
   distribution: RawBucket[];
 }
 
-function filterConditions(query: StatisticsQuery): SQL[] {
-  const conditions: SQL[] = [];
-
-  if (query.status !== 'ALL') {
-    conditions.push(sql`e.status = ${query.status}`);
-  }
-  if (query.country !== undefined) {
-    conditions.push(sql`e.country = ${query.country}`);
-  }
-  if (query.departmentId !== undefined) {
-    conditions.push(sql`e.department_id = ${query.departmentId}`);
-  }
-  if (query.jobLevelId !== undefined) {
-    conditions.push(sql`e.job_level_id = ${query.jobLevelId}`);
-  }
-
-  // `true` keeps the WHERE clause valid when nothing is filtered.
-  return conditions.length === 0 ? [sql`true`] : conditions;
-}
-
 /**
  * There is no access scope here on purpose.
  *
@@ -179,9 +165,25 @@ export async function computeStatistics(
  * from outside this file.
  */
 export function buildStatisticsQuery(query: StatisticsQuery): SQL {
-  const where = sql.join(filterConditions(query), sql` AND `);
+  const where = whereFrom([...statusCondition(query.status), ...employeeFilterConditions(query)]);
   const buckets = sql.raw(String(DISTRIBUTION_BUCKETS));
-  const minGroup = sql.raw(String(MIN_GROUP_FOR_MEDIAN));
+
+  /**
+   * What every group reports, written once.
+   *
+   * The three breakdowns below differ only in what they group *by*. They had a
+   * copy each of these five expressions, including the small-group suppression
+   * — the rule with a disclosure argument behind it, pasted three times and
+   * therefore three places to forget it.
+   */
+  const groupAggregates = sql`
+    count(*)::int AS headcount,
+    count(usd)::int AS paid_headcount,
+    coalesce(sum(usd), 0)::bigint AS total_usd_minor,
+    CASE WHEN count(usd) >= ${sql.raw(String(MIN_GROUP_FOR_MEDIAN))}
+      THEN percentile_cont(0.5) WITHIN GROUP (ORDER BY usd)::bigint
+    END AS median_usd_minor
+  `;
 
   return sql`
       WITH pay AS MATERIALIZED (
@@ -227,42 +229,21 @@ export function buildStatisticsQuery(query: StatisticsQuery): SQL {
         FROM pay
       ),
       by_department AS (
-        SELECT
-          department_id AS id,
-          department_name AS label,
-          count(*)::int AS headcount,
-          count(usd)::int AS paid_headcount,
-          coalesce(sum(usd), 0)::bigint AS total_usd_minor,
-          CASE WHEN count(usd) >= ${minGroup}
-            THEN percentile_cont(0.5) WITHIN GROUP (ORDER BY usd)::bigint
-          END AS median_usd_minor
+        SELECT department_id AS id, department_name AS label, ${groupAggregates}
         FROM pay
         GROUP BY department_id, department_name
       ),
       by_country AS (
-        SELECT
-          NULL::int AS id,
-          country AS label,
-          count(*)::int AS headcount,
-          count(usd)::int AS paid_headcount,
-          coalesce(sum(usd), 0)::bigint AS total_usd_minor,
-          CASE WHEN count(usd) >= ${minGroup}
-            THEN percentile_cont(0.5) WITHIN GROUP (ORDER BY usd)::bigint
-          END AS median_usd_minor
+        /* No id: a country is its own name here, and inventing one would imply a
+           table this schema does not have. */
+        SELECT NULL::int AS id, country AS label, ${groupAggregates}
         FROM pay
         GROUP BY country
       ),
       by_job_level AS (
-        SELECT
-          job_level_id AS id,
-          job_level_name AS label,
-          level_rank,
-          count(*)::int AS headcount,
-          count(usd)::int AS paid_headcount,
-          coalesce(sum(usd), 0)::bigint AS total_usd_minor,
-          CASE WHEN count(usd) >= ${minGroup}
-            THEN percentile_cont(0.5) WITHIN GROUP (ORDER BY usd)::bigint
-          END AS median_usd_minor
+        /* level_rank rides along so the levels can be ordered by seniority
+           rather than alphabetically. */
+        SELECT job_level_id AS id, job_level_name AS label, level_rank, ${groupAggregates}
         FROM pay
         GROUP BY job_level_id, job_level_name, level_rank
       ),

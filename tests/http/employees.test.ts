@@ -191,9 +191,12 @@ describe('GET /api/employees', () => {
       expect(errorOf(response)).toMatchObject({ code: 'INVALID_REQUEST' });
     });
 
-    it.each([25, 50, 100])('given a page size of %s, when listing, then it is accepted', async (pageSize) => {
-      await list('hr.admin@acme.test', { pageSize }).expect(200);
-    });
+    it.each([25, 50, 100])(
+      'given a page size of %s, when listing, then it is accepted',
+      async (pageSize) => {
+        await list('hr.admin@acme.test', { pageSize }).expect(200);
+      },
+    );
   });
 
   describe('sorting and money', () => {
@@ -236,7 +239,10 @@ describe('GET /api/employees', () => {
     });
 
     it('given people with no pay, when sorting by salary, then they sort last in both directions', async () => {
-      const ascending = await allRowsFor('hr.admin@acme.test', { sortBy: 'salary', sortDir: 'asc' });
+      const ascending = await allRowsFor('hr.admin@acme.test', {
+        sortBy: 'salary',
+        sortDir: 'asc',
+      });
       const descending = await allRowsFor('hr.admin@acme.test', {
         sortBy: 'salary',
         sortDir: 'desc',
@@ -251,13 +257,17 @@ describe('GET /api/employees', () => {
     it('given no date, when listing, then salaries are as they stand today', async () => {
       const rows = await allRowsFor('hr.admin@acme.test');
 
-      expect(rows.find((row) => row.id === org.chain.manager)?.salary?.amountMinor).toBe(12_000_000);
+      expect(rows.find((row) => row.id === org.chain.manager)?.salary?.amountMinor).toBe(
+        12_000_000,
+      );
     });
 
     it('given a date before a raise, when listing, then the earlier salary is reported', async () => {
       const rows = await allRowsFor('hr.admin@acme.test', { asOf: '2025-06-30' });
 
-      expect(rows.find((row) => row.id === org.chain.manager)?.salary?.amountMinor).toBe(10_000_000);
+      expect(rows.find((row) => row.id === org.chain.manager)?.salary?.amountMinor).toBe(
+        10_000_000,
+      );
     });
 
     it('given a raise that has not started yet, when listing today, then it is not counted', async () => {

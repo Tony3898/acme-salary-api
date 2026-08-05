@@ -28,6 +28,19 @@ const overviewQuerySchema = z.object({
   jobLevelId: z.coerce.number().int().positive().optional(),
 });
 
+/**
+ * The window the chart asks for. Both are clamped in the service rather than
+ * refused here: a request for two centuries of history is somebody exploring
+ * the API, and the sensible answer is as much as we will draw.
+ */
+const trendQuerySchema = z.object({
+  asOf: z.string().refine(isValidIsoDate, 'asOf must be a date as YYYY-MM-DD.').optional(),
+  historyMonths: z.coerce.number().int().positive().optional(),
+  /* Zero is allowed and means "no forecast": a legitimate thing to ask for when
+     somebody wants the history on its own. */
+  horizonMonths: z.coerce.number().int().nonnegative().optional(),
+});
+
 export interface StatisticsRouterDeps {
   statistics: StatisticsService;
   requireAuth: RequestHandler;
@@ -47,6 +60,16 @@ export function createStatisticsRouter(deps: StatisticsRouterDeps): Router {
        misconfiguration away from serving them to the wrong person. */
     res.setHeader('Cache-Control', 'no-store');
     res.status(HTTP_STATUS.OK).json(overview);
+  });
+
+  router.get('/payroll-trend', deps.requireAuth, async (req, res) => {
+    const query = trendQuerySchema.parse(req.query);
+    const { role, employeeId } = authContext(req);
+
+    const trend = await deps.statistics.payrollTrend({ role, employeeId }, query);
+
+    res.setHeader('Cache-Control', 'no-store');
+    res.status(HTTP_STATUS.OK).json(trend);
   });
 
   return router;

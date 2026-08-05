@@ -171,7 +171,9 @@ describe('error handling', () => {
     const response = await request(app).get('/no-such-thing');
 
     expect(response.status).toBe(404);
-    expect(bodyOf(response)).toEqual({ error: { code: 'NOT_FOUND', message: 'No such endpoint.' } });
+    expect(bodyOf(response)).toEqual({
+      error: { code: 'NOT_FOUND', message: 'No such endpoint.' },
+    });
   });
 });
 

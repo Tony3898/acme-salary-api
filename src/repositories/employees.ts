@@ -1,7 +1,15 @@
 import { and, eq, sql, type SQL } from 'drizzle-orm';
 import { rawRows, type Database } from '../db/database';
-import { compensationRecords } from '../db/schema';
+import { compensationRecords, employees } from '../db/schema';
 import type { AccessScope } from '../domain/accessScope';
+import {
+  employeeFilterConditions,
+  scopeCondition,
+  searchCondition,
+  statusCondition,
+  teamCte,
+  whereFrom,
+} from './employeeFilters';
 import type { Currency } from '../domain/money';
 
 /**
@@ -89,7 +97,15 @@ export interface EmployeeListResult {
   total: number;
 }
 
-interface RawEmployeeRow {
+/**
+ * The columns `EMPLOYEE_COLUMNS` selects, for both the list and one record.
+ *
+ * The window-function total is *not* here. It belongs to a page of results, and
+ * having it on the shared type meant the single-record query selected a
+ * hard-coded `1 AS total_count` to satisfy a field nothing reads — a lie in the
+ * SQL to keep a type happy.
+ */
+interface RawEmployeeColumns {
   id: number;
   full_name: string;
   email: string;
@@ -107,6 +123,10 @@ interface RawEmployeeRow {
   currency: Currency | null;
   effective_from: string | null;
   salary_usd_minor: number | null;
+}
+
+/** A row from the list, which also carries how many the filters matched. */
+interface RawEmployeeListRow extends RawEmployeeColumns {
   total_count: number;
 }
 
@@ -161,78 +181,19 @@ function employeeFrom(asOf: string): SQL {
 }
 
 /**
- * Everybody the scope allows, as a condition on `e`.
+ * Who this page is about: the scope, the filters and the search, together.
  *
- * NONE returns `false` rather than throwing: a scope with nobody in it is a valid
- * answer, and an empty page is the correct response to it.
+ * The filters themselves are shared with the statistics — see
+ * employeeFilters.ts, which exists because these two had a copy each and the
+ * copies had already drifted.
  */
-function scopeCondition(scope: AccessScope): SQL {
-  switch (scope.kind) {
-    case 'ALL':
-      return sql`true`;
-    case 'SELF':
-      return sql`e.id = ${scope.employeeId}`;
-    case 'TEAM':
-      return sql`e.id IN (SELECT id FROM team)`;
-    case 'NONE':
-      return sql`false`;
-  }
-}
-
-/**
- * The recursive walk down a manager's reporting chain, including the manager.
- *
- * `UNION` rather than `UNION ALL`: duplicates are discarded, which also means a
- * cycle in `manager_id` terminates instead of running until the server gives up.
- * The data should never contain one, but a query that hangs is a poor way to find
- * out.
- */
-function teamCte(scope: AccessScope): SQL {
-  if (scope.kind !== 'TEAM') {
-    return sql``;
-  }
-
-  return sql`
-    WITH RECURSIVE team AS (
-      SELECT id FROM employees WHERE id = ${scope.managerEmployeeId}
-      UNION
-      SELECT reports.id
-      FROM employees reports
-      JOIN team ON reports.manager_id = team.id
-    )
-  `;
-}
-
-/**
- * Escapes the wildcards so a search for "50%" finds the text "50%" rather than
- * everything beginning with 50. Postgres treats a backslash as the escape
- * character in LIKE by default.
- */
-function escapeLikeWildcards(value: string): string {
-  return value.replace(/[\\%_]/g, (character) => `\\${character}`);
-}
-
-function filterConditions(query: EmployeeListQuery): SQL[] {
-  const conditions: SQL[] = [scopeCondition(query.scope)];
-
-  if (query.search !== undefined && query.search.trim() !== '') {
-    const pattern = `%${escapeLikeWildcards(query.search.trim())}%`;
-    conditions.push(sql`(e.full_name ILIKE ${pattern} OR e.email ILIKE ${pattern})`);
-  }
-  if (query.country !== undefined) {
-    conditions.push(sql`e.country = ${query.country}`);
-  }
-  if (query.departmentId !== undefined) {
-    conditions.push(sql`e.department_id = ${query.departmentId}`);
-  }
-  if (query.jobLevelId !== undefined) {
-    conditions.push(sql`e.job_level_id = ${query.jobLevelId}`);
-  }
-  if (query.status !== undefined) {
-    conditions.push(sql`e.status = ${query.status}`);
-  }
-
-  return conditions;
+function listConditions(query: EmployeeListQuery): SQL[] {
+  return [
+    scopeCondition(query.scope),
+    ...searchCondition(query.search),
+    ...employeeFilterConditions(query),
+    ...statusCondition(query.status ?? 'ALL'),
+  ];
 }
 
 /**
@@ -246,7 +207,7 @@ export async function listEmployees(
   db: Database,
   query: EmployeeListQuery,
 ): Promise<EmployeeListResult> {
-  const rows = await rawRows<RawEmployeeRow>(db, buildEmployeeListQuery(query));
+  const rows = await rawRows<RawEmployeeListRow>(db, buildEmployeeListQuery(query));
 
   if (rows.length > 0) {
     return { rows: rows.map(toEmployeeListRow), total: rows[0]?.total_count ?? 0 };
@@ -281,7 +242,7 @@ export async function listEmployees(
 export function buildEmployeeListQuery(query: EmployeeListQuery): SQL {
   const direction = sql.raw(query.sortDir === 'asc' ? 'ASC' : 'DESC');
   const offset = (query.page - 1) * query.pageSize;
-  const where = sql.join(filterConditions(query), sql` AND `);
+  const where = whereFrom(listConditions(query));
 
   return sql`
     ${teamCte(query.scope)}
@@ -298,7 +259,7 @@ export function buildEmployeeListQuery(query: EmployeeListQuery): SQL {
 
 /** The count, built but not run. Reuses the same filters and the same team walk. */
 export function buildEmployeeCountQuery(query: EmployeeListQuery): SQL {
-  const where = sql.join(filterConditions(query), sql` AND `);
+  const where = whereFrom(listConditions(query));
 
   return sql`
     ${teamCte(query.scope)}
@@ -327,11 +288,11 @@ export async function findEmployeeById(
   db: Database,
   query: { id: number; scope: AccessScope; asOf: string },
 ): Promise<EmployeeListRow | null> {
-  const rows = await rawRows<RawEmployeeRow>(
+  const rows = await rawRows<RawEmployeeColumns>(
     db,
     sql`
       ${teamCte(query.scope)}
-      SELECT ${EMPLOYEE_COLUMNS}, 1 AS total_count
+      SELECT ${EMPLOYEE_COLUMNS}
       ${employeeFrom(query.asOf)}
       WHERE ${scopeCondition(query.scope)} AND e.id = ${query.id}
       LIMIT 1
@@ -482,6 +443,104 @@ export async function hasIdenticalCompensationRecord(
   return found !== undefined;
 }
 
+/** Everything the employees table needs, with nothing optional left implicit. */
+export interface NewEmployee {
+  fullName: string;
+  /** Already trimmed and lower-cased by the service; the index is on lower(email). */
+  email: string;
+  country: string;
+  departmentId: number;
+  jobLevelId: number;
+  jobTitle: string | null;
+  hireDate: string;
+  managerId: number | null;
+  status: 'ACTIVE' | 'LEFT';
+}
+
+/** The salary somebody starts on, if it is known when the record is created. */
+export interface FirstPay {
+  amountMinor: number;
+  currency: Currency;
+  effectiveFrom: string;
+  reason: string | null;
+  createdBy: number;
+}
+
+/**
+ * Whether the ids a new record points at actually exist.
+ *
+ * Checked before inserting rather than letting the foreign keys refuse it. A
+ * constraint violation is a 500 with a message written for whoever is on call;
+ * this turns the same mistake into a 400 that names the field.
+ *
+ * One statement rather than three: they are three questions about three tables
+ * and there is no reason to pay three round trips for them.
+ */
+export async function findMissingReferences(
+  db: Database,
+  references: { departmentId: number; jobLevelId: number; managerId: number | null },
+): Promise<{ department: boolean; jobLevel: boolean; manager: boolean }> {
+  const [row] = await rawRows<{ department: boolean; job_level: boolean; manager: boolean }>(
+    db,
+    sql`
+      SELECT
+        NOT EXISTS (SELECT 1 FROM departments WHERE id = ${references.departmentId}) AS department,
+        NOT EXISTS (SELECT 1 FROM job_levels WHERE id = ${references.jobLevelId}) AS job_level,
+        (
+          ${references.managerId}::int IS NOT NULL
+          AND NOT EXISTS (SELECT 1 FROM employees WHERE id = ${references.managerId})
+        ) AS manager
+    `,
+  );
+
+  if (row === undefined) {
+    throw new Error('The reference check returned no row, which should be impossible.');
+  }
+  return { department: row.department, jobLevel: row.job_level, manager: row.manager };
+}
+
+/**
+ * Whether an address is already on somebody's record.
+ *
+ * Case-insensitively, matching the unique index. Two people differing only in
+ * capitalisation is an ambiguity, and the address is how a person is found.
+ */
+export async function emailIsTaken(db: Database, email: string): Promise<boolean> {
+  const [found] = await rawRows<{ id: number }>(
+    db,
+    sql`SELECT id FROM employees WHERE lower(email) = lower(${email}) LIMIT 1`,
+  );
+
+  return found !== undefined;
+}
+
+/**
+ * Creates a person, with their starting salary if one is known.
+ *
+ * In a transaction, because the two halves are one decision. Without it, a
+ * failure between them leaves somebody hired with no pay and nobody aware of
+ * it — and the fix is a salary backdated by however long it took to notice.
+ */
+export async function insertEmployee(
+  db: Database,
+  employee: NewEmployee,
+  pay: FirstPay | null,
+): Promise<number> {
+  return db.transaction(async (tx) => {
+    const [inserted] = await tx.insert(employees).values(employee).returning({ id: employees.id });
+
+    if (inserted === undefined) {
+      throw new Error(`Failed to create the record for ${employee.email}.`);
+    }
+
+    if (pay !== null) {
+      await tx.insert(compensationRecords).values({ employeeId: inserted.id, ...pay });
+    }
+
+    return inserted.id;
+  });
+}
+
 /**
  * How many people report to somebody, directly.
  *
@@ -497,7 +556,7 @@ export async function countDirectReports(db: Database, employeeId: number): Prom
   return counted?.total ?? 0;
 }
 
-function toEmployeeListRow(row: RawEmployeeRow): EmployeeListRow {
+function toEmployeeListRow(row: RawEmployeeColumns): EmployeeListRow {
   return {
     id: row.id,
     fullName: row.full_name,
@@ -516,7 +575,7 @@ function toEmployeeListRow(row: RawEmployeeRow): EmployeeListRow {
   };
 }
 
-function toSalary(row: RawEmployeeRow): EmployeeListRow['salary'] {
+function toSalary(row: RawEmployeeColumns): EmployeeListRow['salary'] {
   if (row.amount_minor === null || row.currency === null || row.effective_from === null) {
     return null;
   }

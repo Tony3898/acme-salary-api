@@ -1,4 +1,10 @@
-import { Router, type CookieOptions, type Request, type RequestHandler, type Response } from 'express';
+import {
+  Router,
+  type CookieOptions,
+  type Request,
+  type RequestHandler,
+  type Response,
+} from 'express';
 import { z } from 'zod';
 import { HTTP_STATUS } from '../errors';
 import { authContext } from '../middleware/requireAuth';

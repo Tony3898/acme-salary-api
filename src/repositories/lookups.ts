@@ -32,15 +32,15 @@ export async function loadLookupData(db: Database): Promise<LookupData> {
   /* In parallel: they are independent, and the whole point of loading them
      together is that it happens once. */
   const [departmentRows, jobLevelRows, countryRows, fxRows, bandRows] = await Promise.all([
-    db.select({ id: departments.id, name: departments.name }).from(departments).orderBy(asc(departments.name)),
+    db
+      .select({ id: departments.id, name: departments.name })
+      .from(departments)
+      .orderBy(asc(departments.name)),
     db
       .select({ id: jobLevels.id, name: jobLevels.name, rank: jobLevels.rank })
       .from(jobLevels)
       .orderBy(asc(jobLevels.rank)),
-    rawRows<{ country: string }>(
-      db,
-      sql`SELECT DISTINCT country FROM employees ORDER BY country`,
-    ),
+    rawRows<{ country: string }>(db, sql`SELECT DISTINCT country FROM employees ORDER BY country`),
     db
       .select({ currency: fxRates.currency, rateToUsd: fxRates.rateToUsd, asOf: fxRates.asOf })
       .from(fxRates)

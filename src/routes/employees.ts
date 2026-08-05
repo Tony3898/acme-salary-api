@@ -79,6 +79,51 @@ const recordPaySchema = z.object({
   reason: z.string().trim().max(MAX_REASON_LENGTH).optional(),
 });
 
+/** Long enough for the longest real names; short enough not to be a payload. */
+const MAX_NAME_LENGTH = 120;
+const MAX_EMAIL_LENGTH = 254;
+const MAX_JOB_TITLE_LENGTH = 120;
+
+/**
+ * A new employee.
+ *
+ * The starting salary is optional and nested rather than flattened: a record is
+ * often created before the offer is signed off, and the three fields only mean
+ * anything together. Nesting them means "no salary yet" is one absent object
+ * rather than three fields that have to agree about being empty.
+ */
+const createEmployeeSchema = z.object({
+  fullName: z.string().trim().min(1, 'A name is required.').max(MAX_NAME_LENGTH),
+  /* Tidied first, then checked: an address pasted with a trailing space is a
+     typing accident rather than an invalid address. The length bound is the
+     254-octet limit on a real one — anything longer is a payload. */
+  email: z
+    .string()
+    .trim()
+    .toLowerCase()
+    .pipe(z.email('That is not an email address.').max(MAX_EMAIL_LENGTH)),
+  country: z
+    .string()
+    .regex(COUNTRY_PATTERN, 'country must be a two-letter code.')
+    .transform((value) => value.toUpperCase()),
+  departmentId: z.coerce.number().int().positive(),
+  jobLevelId: z.coerce.number().int().positive(),
+  jobTitle: z.string().trim().max(MAX_JOB_TITLE_LENGTH).optional(),
+  hireDate: z.string().refine(isValidIsoDate, 'hireDate must be a date as YYYY-MM-DD.'),
+  managerId: z.coerce.number().int().positive().optional(),
+  status: z.enum(['ACTIVE', 'LEFT']).optional(),
+  startingPay: z
+    .object({
+      amount: z.string().trim().min(1, 'An amount is required.').max(32),
+      currency: z.enum(SUPPORTED_CURRENCIES),
+      effectiveFrom: z
+        .string()
+        .refine(isValidIsoDate, 'effectiveFrom must be a date as YYYY-MM-DD.')
+        .optional(),
+    })
+    .optional(),
+});
+
 export interface EmployeeRouterDeps {
   employees: EmployeeService;
   requireAuth: RequestHandler;
@@ -110,6 +155,33 @@ export function createEmployeeRouter(deps: EmployeeRouterDeps): Router {
     );
 
     res.status(HTTP_STATUS.OK).json(page);
+  });
+
+  router.post('/', deps.requireAuth, deps.requireHrAdmin, async (req, res) => {
+    const body = createEmployeeSchema.parse(req.body);
+    const { role, employeeId, userId } = authContext(req);
+
+    const detail = await deps.employees.create(
+      { role, employeeId },
+      {
+        fullName: body.fullName,
+        email: body.email,
+        country: body.country,
+        departmentId: body.departmentId,
+        jobLevelId: body.jobLevelId,
+        ...(body.jobTitle === undefined || body.jobTitle === '' ? {} : { jobTitle: body.jobTitle }),
+        hireDate: body.hireDate,
+        ...(body.managerId === undefined ? {} : { managerId: body.managerId }),
+        ...(body.status === undefined ? {} : { status: body.status }),
+        ...(body.startingPay === undefined ? {} : { startingPay: body.startingPay }),
+        /* From the verified token, never from the body. A client that can name
+           its own author can sign somebody else's name to a pay record. */
+        createdByUserId: userId,
+      },
+    );
+
+    // 201 with the record: the client navigates straight to it, no second call.
+    res.status(HTTP_STATUS.CREATED).json(detail);
   });
 
   router.get('/:id', deps.requireAuth, async (req, res) => {
