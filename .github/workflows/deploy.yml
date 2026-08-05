@@ -174,10 +174,21 @@ jobs:
           docker compose run --rm --entrypoint node api dist/db/migrate.js
 
           # Seeded only when empty, so a redeploy does not wipe whatever was demonstrated.
+          #
+          # A failed query is not zero. The previous version defaulted to 0 on error,
+          # which would have re-seeded — and seeding truncates every table — because
+          # psql had a bad moment. An unreadable count fails the deploy instead.
           COUNT=\$(docker compose exec -T db psql -U acme -d acme_salary -tAc \
-            "SELECT count(*) FROM employees" 2>/dev/null || echo 0)
+            "SELECT count(*) FROM employees" 2>/dev/null || echo UNREADABLE)
+          if [ "\$COUNT" = "UNREADABLE" ]; then
+            echo "Could not read the employee count. Not seeding: it would truncate." >&2
+            exit 1
+          fi
           if [ "\$COUNT" = "0" ]; then
-            docker compose run --rm --entrypoint node api dist/db/seed/cli.js
+            # The flag is required because NODE_ENV is production here. Spelled out
+            # rather than set in .env so it cannot quietly protect nobody later.
+            docker compose run --rm --entrypoint node api \
+              dist/db/seed/cli.js --yes-truncate-every-table
           fi
 
           docker image prune -af
