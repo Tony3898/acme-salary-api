@@ -123,3 +123,72 @@ returns a string; and `SUM()` over `bigint` widens to `numeric`, which arrives a
 alone, tests would have passed on one shape while production received another. Totals now cast back with
 `::bigint`, matching parsers are registered for `pg`, and both behaviours are pinned in
 `tests/pglite.test.ts`.
+
+## Two bugs the tests found in steps 12–15
+
+**The bulk raise compounded.** The first version read each person's current salary
+_as of the effective date_ and applied the percentage to it. The idempotency test —
+apply 4% from 1 December, then apply it again — failed, and the reason was that the
+record the first pass had written was now the salary in force on that date, so the
+second pass raised the raised figure. The fix reads the salary in force the day
+_before_, which also happens to be the more defensible reading of "4% from 1
+December": it is a statement about what people were on in November, and it means the
+same thing however many times somebody presses the button.
+
+Worth recording because the first version passed every other test in the file. Only
+the "run it twice" case distinguishes them, and that case exists because the plan
+listed it before any of this was written.
+
+**The rounding direction was documented wrongly.** The comment said "half away from
+zero, which is what `Math.round` does". That is true for positive numbers and false
+for negative ones — `Math.round(-2.5)` is `-2`, not `-3`. The reference
+implementation in the test was written from the comment rather than from the code and
+disagreed on exactly that case. The code was right; the sentence describing it was
+not. It now says what the code does and why that is the choice worth making: half a
+cent rounds up in both directions, so a rounding decision never leaves somebody worse
+off.
+
+Both of these are the same lesson in different clothes. The arithmetic was easy to
+get approximately right and hard to get exactly right, and what caught the difference
+was a test written from the requirement rather than from the implementation.
+
+## What the review round changed, and what it found
+
+A reviewer's questions — a mix of "why this way?" and "is this actually enforced?" — drove the last round
+of work. Recording it here because the useful part is not that the questions were answered, but which
+answers turned out to be "no".
+
+**Four answers were weak and became code.** `drizzle-kit push` with no migration files is fine for one
+developer with regenerable data and quietly wrong for a team, so the schema is now migration-first with a
+drift check that needs no database. `verify:pg` existed for the driver differences PGlite cannot show and
+was a script somebody had to remember, so there is now CI, and it runs against a real PostgreSQL. Access
+control was applied everywhere and enforced by nothing, so two tests now discover routes and query builders
+for themselves. And the import reported problems as a list, which is unusable at 158 of them, so it returns
+the file with a `problems` column instead.
+
+**Writing the enforcement found two disagreements, and the code was right both times.** The route inventory
+I wrote said logout should require a session and the CSV export should be HR-only. The code deliberately
+does neither: logging out with an expired token has to succeed or the cookie stays, and the export is the
+list somebody is already looking at with the paging removed. My assumptions were the thing that was wrong,
+which is the argument for exercising a classification rather than just declaring one.
+
+**An intermittent test failure was chased to its actual cause.** One run in four failed, in a different
+test each time — a timeout, an empty body, and finally a 404 from statically registered routes for rows that
+certainly existed, which is the symptom that named it: supertest starts a throwaway server per request, the
+operating system reuses ephemeral ports, and Node 19's keep-alive-by-default agent pools sockets by port, so
+a request can be delivered to another test file's app. Each harness now owns one server for its lifetime.
+
+Two comfortable theories came first and both were wrong: argon2 cost (measurably not it — cheap hashing
+moved the suite's wall time by under a second) and worker contention (the failure survived
+`--maxWorkers=2`). Each explained the timeout and the empty body well enough to stop looking, and neither
+explained the 404 at all. Recorded because the lesson is about method rather than about HTTP: the symptom
+that fits none of your theories is the one worth chasing.
+
+**Two silent-failure lessons worth keeping.** The first drift check reported a clean schema when the tool
+had actually errored — `drizzle-kit` resolves `--out` by prefixing `./`, so an absolute temporary path
+fails, and it fails by printing an error and exiting 0. A check that only looked for new files called that
+a pass. Separately, a `vi.mock` path left stale by the directory restructure did not error: vitest
+silently mocked nothing, sixteen tests started running against a real hook, and the failure appeared as
+"useAuth was called outside AuthProvider" in a file that had not been touched. Both are the same shape —
+tooling that reports success when it has done nothing — and both are why the checks here assert on a
+positive signal rather than on the absence of a complaint.

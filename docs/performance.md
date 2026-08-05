@@ -77,6 +77,29 @@ under 20 ms". Measured, three of the six are between 20 and 30 ms. The conclusio
 these is close to needing a cache — but the number was asserted before it was measured, and the measured
 range is 2–30 ms.
 
+## The four newest queries
+
+**Needs attention costs the same for 25 rows as for 100 (22 ms and 20 ms), and less than the plain list.**
+Both numbers are dominated by the same lateral lookup over 10,000 people, and the page size is noise
+against it. It is _cheaper_ than the equivalent page of the employee list because the band predicate
+throws most rows away before the sort: about 700 people are below their band, so the ordering and the two
+window aggregates run over 700 rows rather than 10,000.
+
+**The pay gap is 40 ms for one pass and three groupings.** One statement: a materialised `comparable` CTE,
+`percentile_cont` per (country, level, gender), a per-cell currency count, and the whole thing assembled
+into one row of JSON. The cost is the current-salary lookup again, not the percentiles.
+
+**A bulk-raise preview over the whole company is 48 ms** and returns 9,700-odd rows to Node, where the
+arithmetic happens. That is deliberate: the rounding rule is a pure function the preview and the apply
+share, and expressing it in SQL as well would be a second copy of the one thing that must not drift. At
+this size the round trip costs more than the arithmetic and neither is close to mattering.
+
+**The export is 505 ms for 10,000 rows and 1.41 MB**, read in chunks of a thousand so the process holds a
+thousand rows rather than the company. That is ten queries of the same shape as a page of the list, and
+the arithmetic checks out: 505 ms over ten chunks is about 50 ms each, which is what a page of the list
+costs. Streaming is the point — the figure that matters is not the total but that memory does not grow
+with headcount.
+
 ## The trend is the slowest thing here, and why
 
 Every other figure is a question about one moment: the salary in force on a date, for the people who
@@ -114,6 +137,21 @@ concurrent dashboard users — the next step is a materialised view of current p
 record is inserted. That is a real trade-off (a second source of truth) and is not worth taking on at this
 size. The 50 ms list query is the first place it would pay off, and the number to beat is recorded above
 so the claim can be checked rather than argued.
+
+**At 100,000 people**, since "not yet" is only an answer if the next step is known. The cost above is
+proportional to the number of employees, because it is dominated by resolving current pay for every one of
+them — so ten times the company is roughly ten times the query, and the dashboard lands near a second. The
+answer at that size is the projection described above rather than a cache: one `current_compensation` row per
+employee, written in the same transaction as the pay record, which turns the lateral into an index scan and
+cannot go stale after a raise the way a cached figure can. The append-only table stays the source of truth
+underneath it. Worth being explicit that this is a schema change, not a tuning exercise, and that the trigger
+for it is a measurement rather than a hunch.
+
+**A correction the numbers here do not show.** The histogram's boundary labels were computed with `bigint`
+division, which truncates: with ten buckets a printed boundary could sit up to nine cents below the boundary
+`width_bucket` had actually counted against, so a salary exactly on the line appeared in a bar whose stated
+range excluded it. Now divided as `numeric` and rounded. No measurable cost — it is ten rows of arithmetic —
+but it is the kind of error that survives every performance check because nothing about it is slow.
 
 ## Reproducing
 
