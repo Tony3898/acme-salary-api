@@ -184,11 +184,23 @@ jobs:
           SCRIPT
           )
 
+          # --parameters as JSON, not as the CLI's shorthand `key=[value]` syntax.
+          #
+          # Shorthand strips the backslash from every `\n` in the encoded script without
+          # turning it into a newline, so the whole thing arrives on the instance as one
+          # line: `set -euo pipefailncd /opt/acme-salary...`. It fails as
+          # `invalid option name`, several steps away from anything that names the cause.
+          PARAMS=$(jq -n --arg script "$REMOTE" '{
+            commands: [$script],
+            workingDirectory: ["/opt/acme-salary"],
+            executionTimeout: ["900"]
+          }')
+
           CMD=$(aws ssm send-command \
             --instance-ids "$SERVER" \
             --document-name AWS-RunShellScript \
             --comment "deploy ${IMAGE##*:}" \
-            --parameters "commands=[$(jq -Rn --arg s "$REMOTE" '$s')],workingDirectory=[\"/opt/acme-salary\"],executionTimeout=[\"900\"]" \
+            --parameters "$PARAMS" \
             --query 'Command.CommandId' --output text)
 
           echo "Command $CMD"
