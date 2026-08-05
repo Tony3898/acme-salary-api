@@ -119,31 +119,22 @@ and bulk raises change no schema.
 
 ## Migrations: generated files, and a check that they are not missing
 
-While the schema was changing several times an hour and every row came from the seed script,
-`drizzle-kit push` was the right tool: it diffs `schema.ts` against the database and applies the
-difference, with no files to write. It stops being the right tool the moment a second person has a
-database — and the way it stops is quiet. Push writes no migration, so their copy stays on the old shape,
-the tests pass on both, and the difference surfaces only somewhere that cannot be rebuilt from a seed. A
-review does not show it either: the diff has a changed column and no migration, which looks exactly like a
-change that needed none.
+`drizzle-kit push` diffs `schema.ts` against the database and applies the difference with no files to
+write, which is right while the schema changes hourly and every row comes from a seed. It stops being
+right the moment a second person has a database, and it stops quietly: push writes no migration, so
+their copy stays on the old shape, the tests pass on both, and a review sees a changed column with no
+migration — which looks exactly like a change that needed none.
 
-So the schema is now migration-first. `src/db/migrations/` holds generated SQL, `npm run db:migrate`
-applies it, and the README's setup steps use it rather than push.
+So `src/db/migrations/` holds generated SQL and `npm run db:migrate` applies it.
 
-The part that makes this hold is `npm run verify:migrations`, because a documented workflow is not a
-mechanism. It copies the migrations folder, runs a generate into the copy, and fails if that produces
-anything — which it only does when `schema.ts` and the committed migrations disagree. Then it prints the
-SQL of the missing migration, so the fix is a paste. Two details it learned the hard way, both now
-commented in the script: `drizzle-kit` resolves `--out` by prefixing `./`, so an absolute temporary path
-silently fails, and it reports that failure by _printing an error and exiting 0_ — a check that only looked
-for new files would have called that a pass. It needs no database at all, so it runs in CI before anything
-is provisioned and cannot be satisfied by a server somebody has already pushed to.
-
-`tests/db/migrations.test.ts` asks the other half of the question: applied to an empty database, do the
-committed files actually produce `schema.ts`? Rather than listing tables and hoping the list is complete,
-the migrated database is handed to the same schema diff that generates migrations — if it finds nothing to
-change, the two agree down to constraints, defaults and enum members. Applying them twice must also change
-nothing, which is what a re-run deploy does.
+**The mechanism, because a documented workflow is not one.** `npm run verify:migrations` generates into
+a copy of the migrations folder and fails if that produces anything, which only happens when `schema.ts`
+and the committed files disagree. It prints the missing SQL, so the fix is a paste, and it needs no
+database — so it runs in CI before anything is provisioned and cannot be satisfied by a server somebody
+already pushed to. `tests/db/migrations.test.ts` asks the other direction: applied to an empty database,
+do the committed files reproduce `schema.ts`? The migrated database goes through the same schema diff
+that generates migrations, so agreement means down to constraints, defaults and enum members. Applying
+them twice must change nothing, which is what a re-run deploy does.
 
 ## CI runs against a real PostgreSQL, not only the in-process one
 
@@ -428,62 +419,42 @@ and named as uncounted.
 
 ## CSV: one column list, in both directions
 
-The export writes the columns the import reads. That makes a round trip a real
-property rather than a hope — a file can be exported, edited in Excel and put back
-— and it is the cheapest available test of both halves: a mismatch anywhere in
-thirteen columns shows up as a validation problem rather than as a hire date landing
-in the salary column. `tests/http/employeeCsv.test.ts` exports the whole company,
-re-imports it, and asserts every row is refused for exactly one reason: the address
-is already taken.
+The export writes the columns the import reads, so a round trip is a property rather than a hope, and a
+mismatch in any of thirteen columns shows up as a validation problem instead of a hire date in the salary
+column. `tests/http/employeeCsv.test.ts` exports the whole company, re-imports it, and asserts every row
+is refused for exactly one reason: the address is taken.
 
-References are by **name and email**, never by id. A spreadsheet has "Engineering"
-and an address in it; asking somebody to look up department 4 is asking them to make
-mistakes. Header names are matched loosely — case, spaces and underscores ignored —
-because the file usually comes out of somebody else's system and refusing it over a
-capital letter teaches people to fight the tool.
+References are by **name and email, never by id** — a spreadsheet has "Engineering" in it, and asking
+somebody to look up department 4 is asking them to make mistakes. Headers match loosely on case, spaces
+and underscores, because the file comes out of somebody else's system.
 
-**The parser is real.** Splitting on commas is wrong for the first row containing
-"Smith, Jr.": that row gains a column, everything after it shifts, and the result is
-plausible data rather than an error. So `src/domain/csv.ts` handles quoted fields,
-embedded commas and newlines, doubled quotes, both line endings and Excel's
-byte-order mark. On the way out it also prefixes a leading `=`, `+`, `-` or `@` with
-an apostrophe, because Excel treats those as formulas and an exported name is
-otherwise one spreadsheet away from being something the machine tries to run.
+**The parser is real.** Splitting on commas breaks on the first "Smith, Jr.": that row gains a column,
+everything after it shifts, and the result is plausible data rather than an error. `src/domain/csv.ts`
+handles quoted fields, embedded commas and newlines, doubled quotes, both line endings and Excel's BOM.
+On the way out it prefixes a leading `=`, `+`, `-` or `@` with an apostrophe, because Excel treats those
+as formulas and an exported name is otherwise one spreadsheet away from being executed.
 
-**A file with any problem is refused whole.** The tempting alternative — write the
-9,842 good rows, report the 158 bad ones — leaves the company missing 158 people
-with no record of which, and the corrected file cannot be uploaded again because
-the good rows would now collide. All of it or none of it is the only version
-somebody can recover from, which is why the insert is one transaction.
+**A file with any problem is refused whole**, in one transaction. Writing the 9,842 good rows and
+reporting 158 bad ones leaves the company missing 158 people with no record of which, and the corrected
+file cannot be re-uploaded because the good rows now collide.
 
-**Insertion order is worked out rather than patched up.** A CSV names managers by
-email and has no reason to be sorted by seniority, so the obvious approach is to
-insert everybody with a null manager and run an UPDATE pass. Instead
-`src/domain/importOrder.ts` sorts the rows into layers, managers first, and each
-layer's returned ids resolve the next layer's managers. One pass, no half-linked
-hierarchy if a second statement fails — and working out the order means cycles have
-to be found, which the UPDATE version would happily create. A file saying A reports
-to B and B reports to A is reported rather than broken arbitrarily.
+**Insertion order is worked out, not patched up.** A CSV names managers by email and is not sorted by
+seniority. Rather than inserting everybody with a null manager and running an UPDATE pass,
+`src/domain/importOrder.ts` sorts rows into layers, managers first, each layer's returned ids resolving
+the next. One pass, no half-linked hierarchy if a statement fails — and working out the order means
+cycles must be found, which the UPDATE version would happily create.
 
-The importer does no locale guessing on amounts. `parseAmountToMinor` refuses
-"85,000.50" rather than stripping the comma, because half of Europe writes 85000,50
-for the same amount and stripping would read it as eight and a half million — a
-hundredfold error that passes every later check.
+No locale guessing on amounts: `parseAmountToMinor` refuses "85,000.50" rather than stripping the comma,
+because half of Europe writes 85000,50 for the same amount and stripping reads it as eight and a half
+million — a hundredfold error that passes every later check.
 
-**The problems come back as a file, not only as a list.** The preview screen lists them, and that list
-stops being usable at about thirty: somebody with 158 bad rows in a spreadsheet of ten thousand cannot work
-from a list in another window — they would have to find row 4,812, read what was wrong with it, fix a cell,
-and repeat 157 times with no way to mark their place. So `?report=csv` returns the file they uploaded with
-a `problems` column appended: the complaint sits next to the data it is about, and it sorts and filters
-like any other column.
-
-Three decisions inside that. It is the **same request** with a different representation, not a second
-endpoint, so the file cannot disagree with the screen about what is wrong — and the report is built after
-the two checks that need the database, taken addresses and unresolvable managers, which are exactly the
-problems nobody can work out by reading their own file. **Every row is included**, not only the failures,
-because a file of just the bad rows cannot be re-imported: it is missing the 9,842 that were fine, and
-merging them back by hand is the error-prone step this replaces. And `problems` is deliberately **not** an
-import column, so the corrected file goes straight back in with the column still on it.
+**Problems come back as a file, not only a list.** A list stops being usable at about thirty; nobody
+works through 158 bad rows from a list in another window. `?report=csv` returns the uploaded file with a
+`problems` column appended, so the complaint sits beside the data and sorts like any other column. It is
+the **same request** in a different representation rather than a second endpoint, so the file cannot
+disagree with the screen. **Every row is included**, because a file of only the failures cannot be
+re-imported. And `problems` is not an import column, so the corrected file goes straight back in with it
+still attached.
 
 ## Distinct names are constructed, not hoped for
 
@@ -681,47 +652,29 @@ and the login form becomes a test for whether an address has an account.
 
 ## Caching: lookup data only
 
-Departments, job levels, countries, currencies, bands, rates, settings — about 10 KB, held in a TTL `Map`
-in the process.
+Departments, job levels, countries, currencies, bands, rates, settings — about 10 KB, held in a TTL
+`Map` in the process.
 
-**Not cached: employee and salary data.** The combinations of filter, sort, page and date are effectively
-endless, so little would ever be reused — and because access differs per user, the same URL returns
-different data to different people. Caching those responses risks serving one person's view to another.
+**Not cached: employee and salary data.** The combinations of filter, sort, page and date are
+effectively endless, so little would be reused — and access differs per user, so caching those responses
+risks serving one person's view to another.
 
-**In-memory here; Redis in a real deployment.** This runs as one process on one server, so the cache
-lives in that process — 10 KB in a `Map`, no extra service to run, secure, monitor or fail. That is the
-right answer for this app and the wrong answer for most production ones, so the boundary is worth stating
-plainly rather than discovering later.
+**Not cached: statistics.** Each runs in 20–30 ms at this size ([performance.md](performance.md)), and a
+cache would let the dashboard show stale figures immediately after a raise.
 
-What breaks first is not size, it is the second process. Two servers behind a load balancer each hold
-their own copy: a department renamed through the app invalidates one of them, and the other keeps serving
-the old name until its TTL runs out — so the same user sees the change appear and disappear depending on
-which server answers. Nothing errors, which is what makes it unpleasant to diagnose.
+**In-memory now, Redis when there is a second process.** One process on one server, so the cache lives
+in that process: no extra service to run, secure or monitor. What breaks first is not size but the
+second process — two servers each hold their own copy, so a rename invalidates one and the other serves
+the old value until its TTL expires, and the user watches the change appear and disappear depending on
+who answers. Nothing errors, which is what makes it unpleasant to find.
 
-So the trigger to move is horizontal scaling, or anything else that needs state shared between
-processes — session revocation lists, rate limit counters that must hold across servers, a job queue.
-When it comes, Redis replaces the `load`/`invalidate` pair behind `createCachedValue` and nothing that
-calls it changes: `src/shared/cache.ts` exists as a seam for exactly that. Its cost, stated honestly, is a
-service to operate, a network hop on every miss, and a new failure mode — the cache being unreachable —
-which the current design cannot have.
+`src/shared/cache.ts` is the seam: Redis replaces the `load`/`invalidate` pair behind
+`createCachedValue` and no caller changes. Its cost is a service to operate, a network hop per miss, and
+a failure mode the current design cannot have.
 
-Two things would still not be cached in Redis: employee and salary data, for the reasons above, and
-anything a stale read would make wrong.
-
-**Statistics are not cached either.** Each runs in roughly 20–30 ms at this size (measured, see
-[performance.md](performance.md)), and a cache would let the
-dashboard show stale figures immediately after a raise. If the benchmark shows otherwise, cache then.
-
-**What happens at 100,000 people**, since "cache later" is not a plan. Almost all of that 20–30 ms is the
-lateral lookup that finds each person's current salary, and it is proportional to the number of employees
-— so ten times the company is roughly ten times the query, and the dashboard lands near a second. The
-answer at that size is not a cache: it is a `current_compensation` projection, one row per employee,
-maintained as part of the same transaction that writes a pay record. That turns the lateral into an index
-scan, and it cannot go stale after a raise the way a cached figure can. It is a schema change rather than
-an optimisation, which is why it is not here yet — but it is the shape of the next step, and the append-only
-table remains the source of truth underneath it.
-
-Two free layers remain: CloudFront caches the JS and CSS, and the browser caches lookup responses.
+Two free layers remain: CloudFront caches the JS and CSS, and the browser caches lookup responses. What
+happens at ten times this size is in [scaling.md](scaling.md) — and the answer there is a schema change,
+not a cache.
 
 ## Tests use a real Postgres in-process
 
@@ -740,37 +693,13 @@ awkward is Postgres in Docker.
 **Type checking is a separate step.** The fast test compiler (`@swc/jest`) strips types without checking
 them, so `tsc --noEmit` runs as its own script rather than being implied by a green test run.
 
-**An intermittent failure, and what it turned out to be.** For a while the full suite failed roughly one
-run in four, in a different test each time: a twenty-second timeout, a response with an empty body, and
-eventually a `404` from statically registered routes — `GET /api/stats/overview`, then
-`PATCH /api/employees/:id/status` for an id that certainly existed. That last symptom is the one that named
-it, because a 404 from a route that is definitely registered, for a row that is definitely there, means the
-request reached **a different app** — and each test file has its own app over its own database.
-
-Handed an Express app, supertest starts a throwaway server on an ephemeral port for _every request_ and
-closes it afterwards: thousands across a run. The operating system reuses those ports, and since Node 19 the
-global HTTP agent pools sockets by host and port — so a pooled socket can point at a server that has closed,
-or at one that has since been given the same port by another test file in the same worker. A socket to a
-dead server hangs; one closed mid-response yields no body; one delivered to another app answers 404 for a
-route that app never had.
-
-The fix is to stop creating servers: each harness now listens once on a port it holds for its lifetime, and
-closes it before the database. Keep-alive is disabled alongside it, which is the pair rather than a second
-fix — with reuse on, a response leaves its connection open and `server.close()` waits for it, turning
-closing a harness into a hang.
-
-Two things came out of chasing it that are worth keeping regardless. `bodyOf` now refuses an _empty_ JSON
-object and names the status, content type and raw text: supertest represents "no body" as `{}`, so the
-original failure read as a wrong figure rather than an absent response, which is most of why it took so long
-to place. And argon2's cost parameters are injectable, so the suite hashes cheaply — the parameters live in
-the hash string, so `verifyPassword` reads them back and the login path under test is unchanged, while
-production passes nothing and gets the library's own.
-
-Both of those were also **wrong theories** before the real cause turned up, and that is the part worth
-recording. Argon2 was plausible and measurably not it: cheap hashing changed the suite's wall time by under
-a second. Worker contention was plausible and the failure survived `--maxWorkers=2`. Each explanation
-accounted for the timeout and the empty body comfortably enough to stop looking, and neither could account
-for the 404 at all — which is exactly why the symptom that fits nothing is the one to chase.
+**One harness, one server.** Handed an Express app, supertest starts a throwaway server per request and
+closes it; the OS reuses those ports and Node's agent pools sockets by port, so a request can be
+delivered to a server that has closed or to another test file's app. That produced a failure in one run
+in four, in a different test each time. Each harness now listens once for its lifetime, with keep-alive
+off — the pair, not a second fix, since a reused connection makes `server.close()` wait. Chasing it took
+two wrong theories first; the account is in [ai-prompts.md](ai-prompts.md), because the lesson is about
+method rather than about HTTP.
 
 ## No inline styles
 

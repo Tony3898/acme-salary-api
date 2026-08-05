@@ -28,18 +28,21 @@ React UI lives in a separate repo: **[acme-salary-web](https://github.com/Tony38
    [tests/http/routeInventory.test.ts](tests/http/routeInventory.test.ts) is the test that discovers
    its own subjects so a new endpoint cannot ship unclassified.
 
+If you have a further two: [scaling.md](docs/scaling.md) is what breaks first as this grows, in
+order, with the change for each — including the two that fail silently rather than loudly.
+
 Everything below is depth for whoever wants it, not the price of entry.
 
 ---
 
 ## Live
 
-|                  |                                                                                 |
-| ---------------- | ------------------------------------------------------------------------------- |
-| Application      | **https://acme.tejasrana.in**                                                   |
+|                  |                                                                                  |
+| ---------------- | -------------------------------------------------------------------------------- |
+| Application      | **https://acme.tejasrana.in**                                                    |
 | Walkthrough      | https://acme.tejasrana.in/case-study#walkthrough — 4 minutes, plays in the page  |
 | API              | https://acme.tejasrana.in/api — same origin, routed to this server by CloudFront |
-| Health           | https://acme.tejasrana.in/health                                                |
+| Health           | https://acme.tejasrana.in/health                                                 |
 | How it was built | https://acme.tejasrana.in/case-study — the decisions below, in one page          |
 
 Sign in with any of the [demo accounts](#demo-accounts). The server stops at 22:00 IST and starts
@@ -49,6 +52,29 @@ four minutes against the same URL. See [docs/deployment.md](docs/deployment.md).
 
 The instance answers only CloudFront: its security group admits the CloudFront origin-facing prefix
 list on 443 and nothing else, so a request straight to the origin hostname times out.
+
+## Measured
+
+Numbers rather than adjectives. Query figures come from `npm run bench`, which drives the same query
+builders the API calls, and reprints [performance.md](docs/performance.md) — so they cannot drift from
+the code the way a hand-typed table does.
+
+|                                |                                                                                                 |
+| ------------------------------ | ----------------------------------------------------------------------------------------------- |
+| Dataset                        | 10,000 employees, 23,049 salary records, 6 countries, 14.4 MB                                   |
+| Slowest measured query         | 87 ms — payroll trend, 12 months back and 6 forward                                             |
+| Whole-company dashboard        | 31 ms — nine figures in one statement                                                           |
+| Employee list, page 400 of 400 | 31 ms — the same as page 1; offset is not the cost here                                         |
+| Employee list, as an Employee  | 0.9 ms — the scope is a condition inside the query, so work is proportional to what you may see |
+| Seed from empty                | 2.3 s for 33,000 rows                                                                           |
+| First load                     | 188 KB gzipped, then 2–21 KB per screen; every page is a separate chunk                         |
+| Tests                          | 752 API, 305 web, 80% coverage enforced, all four checks in CI on every push                    |
+| Hosting                        | ~$5/month, one `t4g.micro` stopped outside office hours                                         |
+
+**What is not here: production traffic.** This has one HR team's worth of users and a synthetic dataset,
+so there are no request rates, no p99 under load and no cost-per-user to report. Everything above is
+measured against the full 10,000-employee seed on known hardware, and [scaling.md](docs/scaling.md) says
+what gives way first when that stops being the shape of the problem.
 
 ## Documents
 
@@ -62,6 +88,7 @@ Read these first — they explain what is built and why.
 | [ai-prompts.md](docs/ai-prompts.md)     | How AI tools were used, and where the output needed correcting.      |
 | [performance.md](docs/performance.md)   | Measured query and seed timings, and what they imply.                |
 | [deployment.md](docs/deployment.md)     | The AWS stacks, what protects what, and what it costs.               |
+| [scaling.md](docs/scaling.md)           | What breaks first as this grows, in order, and the change for each.  |
 
 ## Running locally
 
@@ -349,3 +376,34 @@ composition root: what the process is, not what it uses.
 Three rules the linter enforces: nothing outside `repositories/` imports Drizzle (`container.ts` may
 build the connection but runs no queries), `parseFloat` is banned — money is handled as whole minor units
 — and no `eslint-disable` comment is permitted.
+
+## Three patterns that are not about salaries
+
+The brief was salary management, but three decisions here are shape rather than subject, and are the
+part I would carry into a different system unchanged.
+
+**Access as a filter, not a check.** `buildAccessScope(user)` returns a database predicate, and every
+read path applies it. The alternative — a guard on each route — stops people _doing_ things and does
+nothing about reading, so a Manager blocked from editing can still open a dashboard and read
+company-wide figures. The same shape answers "which tickets may this agent see", "whose leave requests
+land in this queue", "which accounts does this partner's export include" — anywhere the answer is a set
+rather than a yes. Its real cost is that it must be impossible to forget, which is why
+[routeInventory.test.ts](tests/http/routeInventory.test.ts) discovers routes rather than listing them.
+
+**Dated records instead of editable values.** A salary is not a number on a person, it is a row with a
+start date; the current one is the most recent that has begun. That gives history, "as it stood on any
+past date", and an audit trail from one decision rather than three features. Leave balances, prices,
+budgets, feature entitlements and rates all have the same shape and are all routinely modelled as a
+mutable column, which loses the past on every write. The cost is a lateral join on every read and one
+more thing to explain to whoever expects `employee.salary`.
+
+**Tests that discover their own subjects.** Three checks here take their inputs from the codebase rather
+than from a list somebody maintains: routes are read off the routers, query builders are checked by
+reading the SQL they generate, and page components are found by globbing the directory. A hand-listed
+test covers what its author remembered; a discovered one fails when something new appears and nobody has
+classified it. That applies to any invariant that must hold across a growing set — every endpoint is
+authenticated, every event has a schema, every migration is reversible — and it is the difference
+between a suite that documents the past and one that constrains the future.
+
+None of this is novel. It is the reason the answer to "how would you apply this elsewhere" is a shape
+and not a rewrite.
