@@ -4,10 +4,10 @@ on:
   push:
     branches: [main]
   pull_request:
-  # So the deploy workflow can run these checks itself rather than assume the push
-  # already did. A deploy that trusts a green tick it did not watch is a deploy that
-  # ships whatever was pushed while CI was still running.
-  workflow_call:
+
+# The deploy workflow waits on this run rather than calling it, so a push to main runs
+# these checks once. It also checks out the sha this run tested, which is what makes
+# waiting equivalent to calling.
 
 # A second push to the same branch cancels the first: the older answer is about
 # code nobody will merge.

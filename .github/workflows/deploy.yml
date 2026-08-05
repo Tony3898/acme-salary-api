@@ -1,11 +1,19 @@
 name: deploy
 
-# Every push to main that changes the API. Not tags: there is one environment, and a
+# After CI has passed, not alongside it. Not tags either: there is one environment, and a
 # release process for a demo would be ceremony.
+#
+# The first version called CI as a reusable workflow, which ran the whole suite twice on
+# every push to main — two runs of the same commit competing for the same runners. Waiting
+# on the run that already happened is half the cost and none of the contention.
+#
+# Note this cannot succeed until acme-salary-persistent exists, because that stack creates
+# the role this assumes. Before then it fails at the credentials step with "Not authorized
+# to perform sts:AssumeRoleWithWebIdentity", which is correct and self-resolving.
 on:
-  push:
-    branches: [main]
-    paths-ignore: ['docs/**', 'README.md', 'infra/**']
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
   workflow_dispatch:
 
 concurrency:
@@ -25,17 +33,23 @@ permissions:
   id-token: write # the OIDC token that stands in for an access key
 
 jobs:
-  # The same checks CI runs, repeated here rather than trusted from the push, because a
-  # deploy that skips them is a deploy that can ship a red build.
-  verify:
-    uses: ./.github/workflows/ci.yml
-
   deploy:
-    needs: verify
+    # A workflow_run fires for every CI run — failures, pull requests, other branches.
+    # Each of those three would otherwise deploy something nobody asked for.
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.conclusion == 'success' &&
+       github.event.workflow_run.event == 'push' &&
+       github.event.workflow_run.head_branch == 'main')
     runs-on: ubuntu-24.04-arm # arm64 natively: QEMU emulation of this build takes ~15x longer
     timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
+        with:
+          # The commit CI actually tested. On a workflow_run event the default checkout is
+          # the branch head, which by then can be a later commit CI never saw — and the
+          # image would be tagged with a sha that was never verified.
+          ref: ${{ github.event.workflow_run.head_sha || github.ref }}
 
       - uses: aws-actions/configure-aws-credentials@v4
         with:
@@ -49,11 +63,15 @@ jobs:
         id: image
         env:
           REGISTRY: ${{ steps.ecr.outputs.registry }}
+          # The sha that was checked out, not GITHUB_SHA. On a workflow_run event those
+          # differ, and a tag naming a commit the image does not contain is worse than
+          # no tag at all.
+          SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
         run: |
           set -euo pipefail
           # Tagged with the commit as well as `latest`, so a rollback is naming a sha
           # rather than finding a build log.
-          IMAGE="$REGISTRY/$ECR_REPOSITORY:${GITHUB_SHA::12}"
+          IMAGE="$REGISTRY/$ECR_REPOSITORY:${SHA::12}"
           docker build -t "$IMAGE" -t "$REGISTRY/$ECR_REPOSITORY:latest" .
           docker push "$IMAGE"
           docker push "$REGISTRY/$ECR_REPOSITORY:latest"
@@ -166,7 +184,7 @@ jobs:
           CMD=$(aws ssm send-command \
             --instance-ids "$SERVER" \
             --document-name AWS-RunShellScript \
-            --comment "deploy ${GITHUB_SHA::12}" \
+            --comment "deploy ${IMAGE##*:}" \
             --parameters "commands=[$(jq -Rn --arg s "$REMOTE" '$s')],workingDirectory=[\"/opt/acme-salary\"],executionTimeout=[\"900\"]" \
             --query 'Command.CommandId' --output text)
 
