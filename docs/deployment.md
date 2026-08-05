@@ -105,6 +105,25 @@ scoped roles described above.
 An older credential path also exists in this account, from before OIDC. Nothing here uses it, and
 retiring it is separate work.
 
+### Account identifiers are literals, and where they would go instead
+
+The account id, the hosted zone id and the certificate ARN are written into
+[infra/lib/names.ts](../infra/lib/names.ts) rather than injected. They are identifiers and not
+credentials — an account id is in every ARN anyone pastes, and none of the three lets a reader do
+anything, because assuming the deploy role requires a trust policy naming an exact repository and
+branch and that policy is not in this repository.
+
+They are literals because there is one environment, and a value that is read once and never varies
+reads better as a constant than as configuration. The cost is real though: this file is specific to
+one AWS account, and somebody forking it has three values to change with no error telling them
+which.
+
+**With more than one environment they belong in repository variables** — `vars.AWS_ACCOUNT_ID`,
+`vars.HOSTED_ZONE_ID`, `vars.ACM_CERTIFICATE_ARN` — passed to `cdk deploy` as context and read back
+through `tryGetContext`. That is the change that makes staging and production the same code rather
+than the same numbers on a different branch, and it touches this one file and the workflow. Nothing
+else reads these values directly, which is the reason they were centralised here to begin with.
+
 ## What protects what
 
 **The database is not on the network.** Postgres publishes no port, so it is reachable only over the

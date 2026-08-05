@@ -5,6 +5,25 @@
  * the wildcard certificate belong to a domain that predates the project. They are
  * looked up by id rather than created, which is why they are constants rather than
  * resources — and why `cdk destroy` cannot take the domain down with it.
+ *
+ * ## Why the account, zone and certificate are literals here
+ *
+ * They are identifiers, not credentials. An account id appears in every ARN anybody
+ * ever pastes, and none of these three lets a reader do anything: assuming the deploy
+ * role needs a trust policy that names an exact repository and branch, and that policy
+ * is not in this file.
+ *
+ * They are literals because one deployment exists, and a constant that is read once
+ * and never varies is clearer as a constant. The honest cost is that this file is
+ * specific to one AWS account, so somebody forking it has three values to change and
+ * no error message telling them which.
+ *
+ * **For anything with more than one environment, these belong in repository variables**
+ * (`vars.AWS_ACCOUNT_ID`, `vars.HOSTED_ZONE_ID`, `vars.ACM_CERTIFICATE_ARN`) passed to
+ * `cdk deploy` as context, with the same names read here through `tryGetContext`. That
+ * is the point at which staging and production stop being the same numbers with a
+ * different branch, and it is a change to this file and the workflow only — nothing
+ * downstream reads these directly.
  */
 
 export const PROJECT = 'acme-salary';
