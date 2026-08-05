@@ -70,6 +70,14 @@ jobs:
         working-directory: infra
         run: npx cdk synth --quiet
 
+      # The rate limiter's correctness depends on three files agreeing, none of which
+      # imports another: the security group, the Caddyfile and the deploy's hop count.
+      # Break any one and nothing fails — the site serves and the limiter quietly
+      # becomes forgeable. Needs no credentials; it reads the synthesised template.
+      - name: The origin lock and the trust chain still agree
+        working-directory: infra
+        run: npm run verify:trust-chain
+
   # The suite runs on PGlite, which is a real Postgres compiled to WebAssembly —
   # fast, and identical for everything the queries do. It is not identical in how
   # values come *back*: node-postgres returns bigint as a string and PGlite as a
@@ -104,6 +112,11 @@ jobs:
           --health-retries 10
 
     env:
+      # Credentials for a container that exists for the length of this job, on a
+      # runner's loopback interface, and is thrown away with it. There is nothing
+      # here to rotate and nothing to reach. Secret scanners flag the shape of this
+      # line rather than its contents, which is the correct default and a false
+      # positive here.
       DATABASE_URL: postgresql://acme:acme_ci@localhost:5432/acme_salary
       # 32 characters minimum, enforced by config.ts. A throwaway value for a
       # throwaway database: nothing real is ever signed with it, and no secret

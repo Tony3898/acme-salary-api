@@ -19,7 +19,7 @@ import * as name from './names';
  * The half that stays.
  *
  * The split is the point of this app: everything expensive lives in ComputeStack and
- * is deleted after two weeks, and everything here costs a few cents a month and keeps
+ * is disposable, and everything here costs a few cents a month and keeps
  * the addresses stable so that recreating the other half is one workflow run rather
  * than a fresh set of URLs to hand out.
  *
@@ -207,14 +207,15 @@ function handler(event) {
      *
      * An earlier version created one per repository, each scoped to exactly what its
      * workflow does. It was the better security story and it is not what this account
-     * uses: `GitHubActionsRole` already exists, already trusts these two repositories,
-     * and is already how six other projects deploy. Two ways to authenticate the same
-     * kind of workflow is worse than one, and the one that is proven wins.
+     * uses: the deploy role already exists and already trusts these two repositories.
+     * Two ways to authenticate the same kind of workflow is worse than one, and the
+     * one that is proven wins.
      *
-     * The trade-off, recorded rather than hidden: that role carries AdministratorAccess
-     * and is shared, so a workflow in any trusted repository can do anything in this
-     * account. What makes it acceptable here and not in general is that this deployment
-     * holds generated data and deletes itself in a fortnight. See docs/deployment.md.
+     * The trade-off, recorded rather than hidden: that role is shared with other work
+     * and is broader than this deployment needs, so a compromise reaches further than
+     * this project does. What makes it acceptable here and not in general is that this
+     * deployment holds generated data and is disposable.
+     * See docs/deployment.md.
      */
 
     new CfnOutput(this, 'WebUrl', { value: `https://${name.WEB_DOMAIN}` });

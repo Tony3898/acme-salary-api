@@ -2,10 +2,10 @@
 
 One URL, two stacks, one CDK app in [infra/](../infra).
 
-|     | Where                             | Costs                                      |
-| --- | --------------------------------- | ------------------------------------------ |
-| UI  | https://acme.tejasrana.in         | ~$0.50/mo                                  |
-| API | https://acme.tejasrana.in/**api** | ~$5/mo, and deletes itself after two weeks |
+|     | Where                         | Costs     |
+| --- | ----------------------------- | --------- |
+| UI  | https://acme.tejasrana.in     | ~$0.50/mo |
+| API | https://acme.tejasrana.in/api | ~$5/mo    |
 
 ```
                  ┌─ acme.tejasrana.in ─────────────────────────────────┐
@@ -69,11 +69,11 @@ Everything runs from GitHub Actions, with no manual step at all. The **infra** w
 (deploy or destroy) and `stack`, and a compute deploy chains straight into the API deploy — so recreating
 the whole API is one click on one workflow, which is the point of writing it this way.
 
-| Workflow | Repository | Trigger                                                |
-| -------- | ---------- | ------------------------------------------------------ |
-| `infra`  | api        | dispatch, plus a daily run that enforces the fortnight |
-| `deploy` | api        | after CI passes on main, or dispatch                   |
-| `deploy` | web        | after CI passes on main, or dispatch                   |
+| Workflow | Repository | Trigger                              |
+| -------- | ---------- | ------------------------------------ |
+| `infra`  | api        | dispatch                             |
+| `deploy` | api        | after CI passes on main, or dispatch |
+| `deploy` | web        | after CI passes on main, or dispatch |
 
 Locally, for reading rather than applying:
 
@@ -91,19 +91,19 @@ it.
 
 An earlier version of this app created three roles instead, one per workflow, each scoped to exactly what
 that workflow does: write one bucket, push one registry, send SSM commands to one tag. That is the better
-security story and it is not the one this account tells. `GitHubActionsRole` already existed, already
-trusted these repositories, and is already how six other projects deploy. Two ways to authenticate the
-same kind of workflow is worse than one, and between a proven mechanism and a better-designed unproven
-one, the proven one wins.
+security story and it is not the one this account tells. The role above already existed and already
+trusted these repositories. Two ways to authenticate the same kind of workflow is worse than one, and
+between a proven mechanism and a better-designed unproven one, the proven one wins.
 
-The cost of that, stated rather than buried: `GitHubActionsRole` carries `AdministratorAccess` and is
-shared across eight repositories, so a workflow compromised in any one of them can do anything in this
-account. What makes it acceptable here is exactly what makes it unacceptable in general — this deployment
-holds generated data, publishes its own demo password, and deletes itself in a fortnight. The first thing
-to change if any of that stops being true is this paragraph.
+The cost of that, stated rather than buried: the role is shared with other work in the same account and
+is broader than this deployment needs, so a compromise of any workflow that can assume it reaches further
+than this project does. What makes that acceptable here is exactly what makes it unacceptable in general —
+this deployment holds generated data, publishes its own demo password, and is disposable.
+The first thing to change if any of that stops being true is this paragraph, and the fix is the three
+scoped roles described above.
 
-Separately, the `github` IAM user in the `CI-CD` group is an older path again: long-lived access keys with
-S3, EC2, Lambda, CloudFront, CloudWatch and Parameter Store access. Nothing in this project uses it.
+An older credential path also exists in this account, from before OIDC. Nothing here uses it, and
+retiring it is separate work.
 
 ## What protects what
 
@@ -126,6 +126,15 @@ Reached directly the chain would be one shorter, and a forged entry would land e
 viewer's belongs; every login attempt could then claim a fresh address. Closing the direct path is
 what makes the header safe to read at all. Port 80 stays open because Let's Encrypt answers its
 challenge there, and Caddy serves nothing else on it.
+
+**And that invariant is checked rather than described.** Everything above depends on three files
+agreeing, none of which imports another: the security group here, the `header_up` line absent from
+the Caddyfile, and `TRUST_PROXY_HOPS` in the deploy. Break any one and nothing fails — the site
+serves, the suite passes, and the login limiter quietly becomes forgeable. So
+[infra/verify-trust-chain.ts](../infra/verify-trust-chain.ts) asserts all three and runs in CI beside
+`cdk synth`, reading the **synthesised template** rather than the source so a rule deleted anywhere in
+the construct tree is caught. Each leg was broken deliberately to confirm it fails: a check that has
+only ever passed is not evidence of anything.
 
 **No SSH.** No key pair exists for this instance and port 22 is never opened. Shell access and every
 deploy go through Session Manager, which needs no inbound rule because the agent dials out, and which
@@ -173,9 +182,12 @@ keeps its certificate in a Docker volume — so a restart does not re-issue and 
 rate limit. Crons are written in UTC with the IST time in a comment; IST has no daylight saving, which is
 the one thing that makes it safe to hardcode.
 
-**The fortnight.** A daily workflow reads the instance's launch time and destroys the compute stack once
-it is 14 days old. Launch time rather than a tag or a date in the template: a tag can be edited by hand,
-and a date computed at synth time changes on every synth and shows up as permanent drift in `cdk diff`.
+**Nothing deletes itself on a timer.** An earlier version of this ran a daily workflow that destroyed the
+compute stack once the instance was two weeks old, on the reasoning that a demo outliving its demo is
+just a bill. That reasoning was about the bill and not about the reader: a link handed to someone whose
+schedule you do not control must not rot on a timer, and a dead URL reads worse than no URL. Tearing the
+stack down is a deliberate `infra` run with `action=destroy`, and the same workflow rebuilds it in about
+four minutes against the same address.
 
 **Destroying the compute stack destroys the database with it.** That is correct here — the data is
 generated and the next deploy re-seeds — and wrong for anything real. The upgrade is RDS in the isolated

@@ -9,7 +9,8 @@
     "synth": "cdk synth",
     "diff": "cdk diff",
     "deploy": "cdk deploy --require-approval any-change",
-    "destroy": "cdk destroy"
+    "destroy": "cdk destroy",
+    "verify:trust-chain": "tsx verify-trust-chain.ts"
   },
   "devDependencies": {
     "@types/node": "^22.10.2",

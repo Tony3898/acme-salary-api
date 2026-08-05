@@ -82,14 +82,14 @@ jobs:
         run: |
           set -euo pipefail
           # By tag, not by id. The compute stack is destroyed and recreated on purpose,
-          # so an instance id in a workflow file would be stale within the fortnight.
+          # so an instance id in a workflow file would go stale the first time it is.
           ID=$(aws ec2 describe-instances \
             --filters "Name=tag:Project,Values=$INSTANCE_TAG" \
                       "Name=instance-state-name,Values=running" \
             --query 'Reservations[0].Instances[0].InstanceId' --output text)
           if [ "$ID" = "None" ] || [ -z "$ID" ]; then
             echo "::error::No running instance tagged Project=$INSTANCE_TAG."
-            echo "::error::It is stopped outside office hours, and destroyed after two weeks."
+            echo "::error::It is stopped outside office hours, and can be destroyed on request."
             echo "::error::Run the 'infra' workflow with action=deploy to bring it back."
             exit 1
           fi

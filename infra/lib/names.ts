@@ -89,13 +89,3 @@ export const VOLUME_GB = 16;
 export const START_CRON = { minute: '30', hour: '9', weekDay: 'MON-FRI' };
 export const STOP_CRON = { minute: '0', hour: '22', weekDay: 'MON-FRI' };
 export const SCHEDULE_TIMEZONE = 'Asia/Kolkata';
-
-/**
- * How long the compute stack is allowed to exist.
- *
- * This deployment is for a review, not for production, so the expensive half deletes
- * itself. Enforced by a daily workflow that reads the instance's launch time rather
- * than by a date baked into the template, because a date in the template changes on
- * every synth and shows up as permanent drift in `cdk diff`.
- */
-export const MAX_AGE_DAYS = 14;

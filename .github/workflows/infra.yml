@@ -1,6 +1,6 @@
 name: infra
 
-# Creating and destroying the API server, by hand or on a timer.
+# Creating and destroying the API server.
 #
 # The whole point of the two-stack split is that this workflow is safe to run: it never
 # touches the site, the DNS zone, the image registry or the roles GitHub trusts. It
@@ -20,10 +20,6 @@ on:
         type: choice
         default: acme-salary-compute
         options: [acme-salary-compute, acme-salary-persistent]
-  # Daily, to enforce the fortnight. Not a one-off schedule at deploy time plus 14 days:
-  # a date baked into the template changes on every synth and reads as permanent drift.
-  schedule:
-    - cron: '0 19 * * *' # 00:30 IST, after the nightly stop
 
 concurrency:
   group: infra
@@ -31,68 +27,13 @@ concurrency:
 
 env:
   AWS_REGION: ap-south-1
-  MAX_AGE_DAYS: 14
 
 permissions:
   contents: read
   id-token: write
 
 jobs:
-  # ── The fortnight ─────────────────────────────────────────────────────────────
-  # A demo deployment that outlives its demo is just a bill. This deletes the expensive
-  # half once the instance is two weeks old; the site stays up and the workflow above
-  # brings the API back in four minutes.
-  expire:
-    if: github.event_name == 'schedule'
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: npm
-          cache-dependency-path: infra/package-lock.json
-
-      - uses: aws-actions/configure-aws-credentials@v4
-        with:
-          role-to-assume: arn:aws:iam::651025161973:role/GitHubActionsRole
-          aws-region: ${{ env.AWS_REGION }}
-
-      - name: How old is the server
-        id: age
-        run: |
-          set -euo pipefail
-          # Launch time rather than a tag: it cannot drift from the thing it describes,
-          # and it survives somebody editing tags by hand.
-          LAUNCHED=$(aws ec2 describe-instances \
-            --filters "Name=tag:Project,Values=acme-salary" \
-                      "Name=instance-state-name,Values=running,stopped" \
-            --query 'Reservations[0].Instances[0].LaunchTime' --output text)
-
-          if [ "$LAUNCHED" = "None" ] || [ -z "$LAUNCHED" ]; then
-            echo "No instance. Nothing to expire."
-            echo "expired=false" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-
-          AGE_DAYS=$(( ( $(date -u +%s) - $(date -u -d "$LAUNCHED" +%s) ) / 86400 ))
-          echo "Launched $LAUNCHED, ${AGE_DAYS} days ago (limit ${MAX_AGE_DAYS})."
-          echo "expired=$([ "$AGE_DAYS" -ge "$MAX_AGE_DAYS" ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
-
-      - name: Destroy the compute stack
-        if: steps.age.outputs.expired == 'true'
-        working-directory: infra
-        run: |
-          npm ci
-          npx cdk destroy acme-salary-compute --force
-          echo "::notice::acme-salary-compute destroyed after ${MAX_AGE_DAYS} days."
-          echo "::notice::https://acme.tejasrana.in still serves; the API is gone until infra/deploy runs."
-
-  # ── By hand ───────────────────────────────────────────────────────────────────
   apply:
-    if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:
