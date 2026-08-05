@@ -1,0 +1,201 @@
+name: deploy
+
+# Every push to main that changes the API. Not tags: there is one environment, and a
+# release process for a demo would be ceremony.
+on:
+  push:
+    branches: [main]
+    paths-ignore: ['docs/**', 'README.md', 'infra/**']
+  workflow_dispatch:
+
+concurrency:
+  # A second deploy while the first is halfway through `compose up` leaves two images
+  # fighting over one container name. Queued, not cancelled — cancelling mid-migration
+  # is the one thing worse than waiting.
+  group: deploy-api
+  cancel-in-progress: false
+
+env:
+  AWS_REGION: ap-south-1
+  ECR_REPOSITORY: acme-salary-api
+  INSTANCE_TAG: acme-salary
+
+permissions:
+  contents: read
+  id-token: write # the OIDC token that stands in for an access key
+
+jobs:
+  # The same checks CI runs, repeated here rather than trusted from the push, because a
+  # deploy that skips them is a deploy that can ship a red build.
+  verify:
+    uses: ./.github/workflows/ci.yml
+
+  deploy:
+    needs: verify
+    runs-on: ubuntu-24.04-arm # arm64 natively: QEMU emulation of this build takes ~15x longer
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::651025161973:role/acme-salary-api-deploy
+          aws-region: ${{ env.AWS_REGION }}
+
+      - id: ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build and push
+        id: image
+        env:
+          REGISTRY: ${{ steps.ecr.outputs.registry }}
+        run: |
+          set -euo pipefail
+          # Tagged with the commit as well as `latest`, so a rollback is naming a sha
+          # rather than finding a build log.
+          IMAGE="$REGISTRY/$ECR_REPOSITORY:${GITHUB_SHA::12}"
+          docker build -t "$IMAGE" -t "$REGISTRY/$ECR_REPOSITORY:latest" .
+          docker push "$IMAGE"
+          docker push "$REGISTRY/$ECR_REPOSITORY:latest"
+          echo "uri=$IMAGE" >> "$GITHUB_OUTPUT"
+
+      - name: Find the server
+        id: server
+        run: |
+          set -euo pipefail
+          # By tag, not by id. The compute stack is destroyed and recreated on purpose,
+          # so an instance id in a workflow file would be stale within the fortnight.
+          ID=$(aws ec2 describe-instances \
+            --filters "Name=tag:Project,Values=$INSTANCE_TAG" \
+                      "Name=instance-state-name,Values=running" \
+            --query 'Reservations[0].Instances[0].InstanceId' --output text)
+          if [ "$ID" = "None" ] || [ -z "$ID" ]; then
+            echo "::error::No running instance tagged Project=$INSTANCE_TAG."
+            echo "::error::It is stopped outside office hours, and destroyed after two weeks."
+            echo "::error::Run the 'infra' workflow with action=deploy to bring it back."
+            exit 1
+          fi
+          echo "id=$ID" >> "$GITHUB_OUTPUT"
+
+      - name: Wait for Session Manager
+        run: |
+          set -euo pipefail
+          # A freshly created instance answers DescribeInstances before its SSM agent has
+          # registered, so the first command after a rebuild would fail on a race.
+          for _ in $(seq 1 30); do
+            STATUS=$(aws ssm describe-instance-information \
+              --filters "Key=InstanceIds,Values=${{ steps.server.outputs.id }}" \
+              --query 'InstanceInformationList[0].PingStatus' --output text 2>/dev/null || echo None)
+            [ "$STATUS" = "Online" ] && exit 0
+            sleep 10
+          done
+          echo "::error::The SSM agent did not come online within five minutes."
+          exit 1
+
+      - name: Release
+        env:
+          IMAGE: ${{ steps.image.outputs.uri }}
+          SERVER: ${{ steps.server.outputs.id }}
+          DEMO_PASSWORD: ${{ secrets.SEED_DEMO_PASSWORD }}
+        run: |
+          set -euo pipefail
+
+          # The remote script is built here and sent whole, so that what ran is in the
+          # workflow log rather than reconstructed from the box.
+          #
+          # Two secrets are generated ON the instance the first time and never leave it:
+          # the database password and the JWT signing key. Neither is a GitHub secret,
+          # because a value that only one machine ever needs should not be copied to a
+          # second place that can print it.
+          REMOTE=$(cat <<SCRIPT
+          set -euo pipefail
+          cd /opt/acme-salary
+
+          aws ecr get-login-password --region $AWS_REGION \
+            | docker login --username AWS --password-stdin ${IMAGE%%/*}
+
+          if [ ! -f .env ]; then
+            umask 077
+            {
+              echo "NODE_ENV=production"
+              echo "PORT=3000"
+              echo "API_DOMAIN=acme-api.tejasrana.in"
+              echo "POSTGRES_USER=acme"
+              echo "POSTGRES_PASSWORD=\$(openssl rand -base64 32 | tr -d '/+=')"
+              echo "POSTGRES_DB=acme_salary"
+              echo "JWT_SECRET=\$(openssl rand -base64 48 | tr -d '\n')"
+              echo "CORS_ORIGIN=https://acme.tejasrana.in"
+              # One proxy in front of the API: the Caddy container. Getting this wrong
+              # either rate-limits every client as one, or trusts a header the client
+              # can forge.
+              echo "TRUST_PROXY_HOPS=1"
+              # Only when set. An empty value is not the same as an absent one: the
+              # config requires at least 8 characters, so writing the line blank would
+              # fail startup, while omitting it falls through to the documented default.
+              if [ -n "${DEMO_PASSWORD}" ]; then echo "SEED_DEMO_PASSWORD=${DEMO_PASSWORD}"; fi
+            } > .env
+            # DATABASE_URL is derived rather than pasted, so the password exists once.
+            . ./.env
+            echo "DATABASE_URL=postgresql://\${POSTGRES_USER}:\${POSTGRES_PASSWORD}@db:5432/\${POSTGRES_DB}" >> .env
+          fi
+
+          # Rewritten every deploy; everything else in .env is left alone.
+          grep -v '^API_IMAGE=' .env > .env.next || true
+          echo "API_IMAGE=${IMAGE}" >> .env.next
+          mv .env.next .env
+          chmod 600 .env
+
+          docker compose pull
+          docker compose up -d --remove-orphans
+
+          # Migrations as their own step, in a throwaway container. Not on API boot: two
+          # containers applying the same migration is a deadlock.
+          docker compose run --rm --entrypoint node api dist/db/migrate.js
+
+          # Seeded only when empty, so a redeploy does not wipe whatever was demonstrated.
+          COUNT=\$(docker compose exec -T db psql -U acme -d acme_salary -tAc \
+            "SELECT count(*) FROM employees" 2>/dev/null || echo 0)
+          if [ "\$COUNT" = "0" ]; then
+            docker compose run --rm --entrypoint node api dist/db/seed/cli.js
+          fi
+
+          docker image prune -af
+          SCRIPT
+          )
+
+          CMD=$(aws ssm send-command \
+            --instance-ids "$SERVER" \
+            --document-name AWS-RunShellScript \
+            --comment "deploy ${GITHUB_SHA::12}" \
+            --parameters "commands=[$(jq -Rn --arg s "$REMOTE" '$s')],workingDirectory=[\"/opt/acme-salary\"],executionTimeout=[\"900\"]" \
+            --query 'Command.CommandId' --output text)
+
+          echo "Command $CMD"
+          aws ssm wait command-executed --command-id "$CMD" --instance-id "$SERVER" || true
+
+          aws ssm get-command-invocation --command-id "$CMD" --instance-id "$SERVER" \
+            --query 'StandardOutputContent' --output text
+          STATUS=$(aws ssm get-command-invocation --command-id "$CMD" --instance-id "$SERVER" \
+            --query 'Status' --output text)
+          if [ "$STATUS" != "Success" ]; then
+            aws ssm get-command-invocation --command-id "$CMD" --instance-id "$SERVER" \
+              --query 'StandardErrorContent' --output text
+            echo "::error::Release failed on the instance: $STATUS"
+            exit 1
+          fi
+
+      - name: Check it answers
+        run: |
+          set -euo pipefail
+          # Against the real domain over HTTPS, so this also proves Caddy got its
+          # certificate and DNS points where it should. Retried: a first-boot
+          # certificate takes a few seconds to issue.
+          for attempt in $(seq 1 20); do
+            if curl -fsS --max-time 10 https://acme-api.tejasrana.in/health | grep -q '"ok"'; then
+              echo "Healthy after ${attempt} attempt(s)."
+              exit 0
+            fi
+            sleep 15
+          done
+          echo "::error::https://acme-api.tejasrana.in/health did not become healthy."
+          exit 1

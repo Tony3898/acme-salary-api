@@ -16,6 +16,7 @@ Read these first — they explain what is built and why.
 | [design-notes.md](docs/design-notes.md) | Trade-offs, and what each decision costs.                            |
 | [ai-prompts.md](docs/ai-prompts.md)     | How AI tools were used, and where the output needed correcting.      |
 | [performance.md](docs/performance.md)   | Measured query and seed timings, and what they imply.                |
+| [deployment.md](docs/deployment.md)     | The AWS stacks, what protects what, and what it costs.               |
 
 ## Running locally
 

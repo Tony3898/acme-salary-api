@@ -2,7 +2,11 @@ import js from '@eslint/js';
 import tseslint from 'typescript-eslint';
 
 export default tseslint.config(
-  { ignores: ['dist/**', 'coverage/**', 'src/db/migrations/**'] },
+  /* `infra/` is its own project with its own tsconfig and its own dependencies — it is
+     CDK, not application code, and linting it from here would mean this config had to
+     know about aws-cdk-lib. It is type-checked by `npm run typecheck` inside infra/,
+     which CI runs. `cdk.out` is generated and includes vendored JavaScript. */
+  { ignores: ['dist/**', 'coverage/**', 'src/db/migrations/**', 'infra/**'] },
   js.configs.recommended,
   ...tseslint.configs.recommendedTypeChecked,
   {

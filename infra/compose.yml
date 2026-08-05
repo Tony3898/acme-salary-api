@@ -1,0 +1,75 @@
+# The stack as it runs on the EC2 instance. Deployed to /opt/acme-salary/compose.yml.
+#
+# Three containers on one small server: Postgres, the API, and Caddy in front of it
+# terminating TLS. The database is on the same box rather than in RDS because the
+# whole dataset is 15 MB and RDS is the largest line on the bill for a company that
+# fits in a laptop's page cache. The upgrade path is a DATABASE_URL change.
+#
+# Nothing here is committed with a secret in it. Values come from /opt/acme-salary/.env,
+# which is written once by infra/provision.sh and never leaves the instance.
+
+services:
+  db:
+    image: postgres:17-alpine
+    container_name: acme-salary-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    # Deliberately no `ports:`. Postgres is reachable only over the compose network,
+    # so publishing 5432 to the host would expose it to the internet for nothing.
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}']
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  api:
+    image: ${API_IMAGE}
+    container_name: acme-salary-api
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    env_file:
+      - .env
+    # Also no `ports:`. Caddy is the only thing that may reach the API, which means
+    # the rate limits and the TLS redirect cannot be bypassed by asking for :3000.
+    expose:
+      - '3000'
+    healthcheck:
+      test:
+        [
+          'CMD',
+          'node',
+          '-e',
+          "require('http').get('http://127.0.0.1:3000/health',r=>process.exit(r.statusCode===200?0:1)).on('error',()=>process.exit(1))",
+        ]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+
+  caddy:
+    image: caddy:2-alpine
+    container_name: acme-salary-caddy
+    restart: unless-stopped
+    depends_on:
+      - api
+    ports:
+      - '80:80'
+      - '443:443'
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    environment:
+      API_DOMAIN: ${API_DOMAIN}
+
+volumes:
+  pgdata:
+  caddy_data: # holds the Let's Encrypt account and certificates; losing it means re-issuing
+  caddy_config:

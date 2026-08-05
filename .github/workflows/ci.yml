@@ -4,6 +4,10 @@ on:
   push:
     branches: [main]
   pull_request:
+  # So the deploy workflow can run these checks itself rather than assume the push
+  # already did. A deploy that trusts a green tick it did not watch is a deploy that
+  # ships whatever was pushed while CI was still running.
+  workflow_call:
 
 # A second push to the same branch cancels the first: the older answer is about
 # code nobody will merge.
@@ -38,6 +42,33 @@ jobs:
 
       - name: Migrations describe schema.ts
         run: npm run verify:migrations
+
+  # The CDK app is a separate project with its own dependencies, so it gets its own job
+  # rather than being bolted onto the one above. Synth catches most of what a bad deploy
+  # would: a missing property, an invalid instance type, a policy that will not render.
+  # It needs no credentials — the account and region are constants, not a lookup.
+  infrastructure:
+    name: Infrastructure synthesises
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: infra/package-lock.json
+
+      - working-directory: infra
+        run: npm ci
+
+      - name: Typecheck
+        working-directory: infra
+        run: npm run typecheck
+
+      - name: Synthesise both stacks
+        working-directory: infra
+        run: npx cdk synth --quiet
 
   # The suite runs on PGlite, which is a real Postgres compiled to WebAssembly —
   # fast, and identical for everything the queries do. It is not identical in how

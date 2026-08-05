@@ -38,6 +38,11 @@ yarn-error.log*
 .DS_Store
 Thumbs.db
 
+# CDK. cdk.out holds synthesised templates and the assets they reference — generated
+# from infra/, and large enough that reviewing a diff of it is nobody's job.
+infra/cdk.out/
+infra/node_modules/
+
 # Temporary
 tmp/
 *.tmp
