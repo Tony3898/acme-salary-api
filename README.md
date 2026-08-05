@@ -3,7 +3,7 @@
 Backend for ACME's salary management system: employee and salary records for ~10,000 people across
 several countries, plus the statistics an HR Manager currently rebuilds by hand in Excel.
 
-React UI lives in a separate repo: **[acme-salary-web](../acme-salary-web)**
+React UI lives in a separate repo: **[acme-salary-web](https://github.com/Tony3898/acme-salary-web)**
 
 ## Documents
 
@@ -243,9 +243,14 @@ npm run lint
 npm run verify:migrations     # the committed migrations describe schema.ts — needs no database
 npm run verify:pg             # driver behaviour the in-process Postgres cannot show
 npm run verify:injection      # every raw statement, built with hostile input
+npm run bench                 # times the real query builders; reprints the performance table
 ```
 
-All of these run in CI on every push and pull request, and the second job runs the suite, the migrations
+`bench` is not a check and is not in CI — a timing assertion on a shared machine fails for reasons that
+have nothing to do with the code. It exists so the figures in
+[docs/performance.md](docs/performance.md) can be reproduced rather than believed.
+
+The rest run in CI on every push and pull request, and the second job runs the suite, the migrations
 and the seed against a **real PostgreSQL** service container before `verify:pg` and `verify:injection` —
 see [.github/workflows/ci.yml](.github/workflows/ci.yml). The suite itself uses PGlite, which is a real
 Postgres compiled to WebAssembly and identical for everything the queries do; it is _not_ identical in how

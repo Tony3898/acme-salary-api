@@ -21,6 +21,7 @@
     "db:generate": "drizzle-kit generate",
     "db:migrate": "drizzle-kit migrate",
     "seed": "tsx src/db/seed/cli.ts",
+    "bench": "tsx scripts/bench.ts",
     "verify:migrations": "tsx scripts/verify-migrations.ts",
     "verify:pg": "tsx scripts/verify-postgres.ts",
     "verify:injection": "tsx scripts/verify-injection.ts"
