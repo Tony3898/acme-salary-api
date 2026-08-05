@@ -5,6 +5,7 @@ import {
   employees,
   fxRates,
   jobLevels,
+  salaryBands,
 } from '../../src/db/schema';
 import type { TestDb } from './testDb';
 
@@ -22,6 +23,26 @@ import type { TestDb } from './testDb';
 /** Enough to force a second page at the smallest page size. */
 const FILLER_COUNT = 30;
 const FILLER_AMOUNT_MINOR = 9_000_000; // $90,000.00
+
+/**
+ * Pay bands chosen so that each of the six band outcomes has a case.
+ *
+ * Deliberately arranged, not generated: every "below band" figure below can be
+ * checked against these numbers by hand, and the totals in the needs-attention
+ * tests are worked out from them in the test rather than read back from the code.
+ */
+export const ORG_BANDS = {
+  /** deep is on 10,000,000 — comfortably inside. */
+  usSenior: { minMinor: 9_000_000, midMinor: 12_000_000, maxMinor: 16_000_000 },
+  /** Every filler is on 9,000,000, so all thirty are short by 500,000 cents. */
+  usJunior: { minMinor: 9_500_000, midMinor: 10_000_000, maxMinor: 12_000_000 },
+  /** The manager is on 12,000,000; their report is on 8,000,000 and short by 1,000,000. */
+  gbSenior: { minMinor: 9_000_000, midMinor: 11_000_000, maxMinor: 13_000_000 },
+  gbJunior: { minMinor: 4_000_000, midMinor: 5_000_000, maxMinor: 6_000_000 },
+  /** deepest is on 500,000,000 paise and short by 100,000,000. */
+  inJunior: { minMinor: 600_000_000, midMinor: 700_000_000, maxMinor: 800_000_000 },
+  inSenior: { minMinor: 900_000_000, midMinor: 1_100_000_000, maxMinor: 1_400_000_000 },
+} as const;
 
 export interface SeededOrg {
   engineeringId: number;
@@ -45,6 +66,8 @@ interface PersonSpec {
   levelKey: 'senior' | 'junior';
   managerEmail?: string;
   status?: 'ACTIVE' | 'LEFT';
+  /** Required when the status is LEFT; the schema refuses a leaver without one. */
+  leftOn?: string;
   hireDate: string;
   /** Every compensation record for this person, in the order written. */
   pay: { amountMinor: number; effectiveFrom: string }[];
@@ -74,6 +97,15 @@ export async function seedOrg(db: TestDb, managerEmployeeId: number): Promise<Se
   }
 
   await db.insert(fxRates).values(RATES.map((rate) => ({ ...rate, asOf: '2026-08-01' })));
+
+  await db.insert(salaryBands).values([
+    { jobLevelId: senior.id, country: 'US', currency: 'USD', ...ORG_BANDS.usSenior },
+    { jobLevelId: junior.id, country: 'US', currency: 'USD', ...ORG_BANDS.usJunior },
+    { jobLevelId: senior.id, country: 'GB', currency: 'GBP', ...ORG_BANDS.gbSenior },
+    { jobLevelId: junior.id, country: 'GB', currency: 'GBP', ...ORG_BANDS.gbJunior },
+    { jobLevelId: junior.id, country: 'IN', currency: 'INR', ...ORG_BANDS.inJunior },
+    { jobLevelId: senior.id, country: 'IN', currency: 'INR', ...ORG_BANDS.inSenior },
+  ]);
 
   const manager = await requireEmployee(db, managerEmployeeId);
   const report = await requireReportOf(db, managerEmployeeId);
@@ -125,6 +157,7 @@ export async function seedOrg(db: TestDb, managerEmployeeId: number): Promise<Se
       levelKey: 'junior',
       managerEmail: 'outside.lead@acme.test',
       status: 'LEFT',
+      leftOn: '2025-11-30',
       hireDate: '2021-07-01',
       pay: [{ amountMinor: 7_000_000, effectiveFrom: '2024-01-01' }],
     },
@@ -185,6 +218,7 @@ export async function seedOrg(db: TestDb, managerEmployeeId: number): Promise<Se
         hireDate: person.hireDate,
         managerId: managerId ?? null,
         status: person.status ?? 'ACTIVE',
+        leftOn: person.leftOn ?? null,
       })
       .returning({ id: employees.id });
 

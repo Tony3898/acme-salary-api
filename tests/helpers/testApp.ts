@@ -1,4 +1,4 @@
-import type { Express } from 'express';
+import type { Server } from 'node:http';
 import { createApp, type AppOptions } from '../../src/app';
 import { createContainer, type Container } from '../../src/container';
 import { departments, employees, jobLevels, users } from '../../src/db/schema';
@@ -46,7 +46,20 @@ export interface TestClock {
 }
 
 export interface TestHarness {
-  app: Express;
+  /**
+   * A **listening server**, not the Express app, and passed to supertest as such.
+   *
+   * Handed `request(app)`, supertest starts a throwaway server on an ephemeral port for
+   * every single request and closes it afterwards — thousands of them across a run. The
+   * operating system reuses those ports, and a pooled keep-alive socket then points at a
+   * server that has closed or, worse, at another test file's app: which showed up as a
+   * request to a perfectly valid route answering 404, a response with no body, and a
+   * twenty-second timeout, one run in four and never the same test twice.
+   *
+   * One server per harness, closed with it. It is also closer to how the app runs in
+   * production, where there is one server and many requests rather than the reverse.
+   */
+  app: Server;
   db: TestDb;
   container: Container;
   accounts: TestAccounts;
@@ -83,6 +96,7 @@ export async function createTestHarness(options: TestHarnessOptions = {}): Promi
       jwtSecret: TEST_JWT_SECRET,
       accessTokenTtlMinutes: ACCESS_TOKEN_TTL_MINUTES,
       refreshTokenTtlDays: REFRESH_TOKEN_TTL_DAYS,
+      syntheticData: true,
     },
     { database, now: clock.now },
   );
@@ -101,7 +115,31 @@ export async function createTestHarness(options: TestHarnessOptions = {}): Promi
     },
   });
 
-  return { app, db: database.db, container, accounts, clock, close: () => container.close() };
+  /* Port 0: the operating system picks a free one. Held for the life of the harness, so
+     nothing else can be handed the same port while a request is in flight. */
+  const server = app.listen(0);
+
+  return {
+    app: server,
+    db: database.db,
+    container,
+    accounts,
+    clock,
+    close: async () => {
+      /* The server first: closing the database under a request that is still running
+         would surface as a failure in whatever test happened to be last. */
+      await new Promise<void>((resolve, reject) => {
+        server.close((error) => {
+          if (error) {
+            reject(error);
+            return;
+          }
+          resolve();
+        });
+      });
+      await container.close();
+    },
+  };
 }
 
 /**

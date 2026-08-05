@@ -38,7 +38,13 @@ export interface GeneratedPeople {
  * senior levels, which is the honest shape of a reported gap.
  */
 const GENDER_GAP_FACTOR = 0.96;
-const SENIOR_RANK = 40;
+/**
+ * Where "senior" begins, for the one thing that varies with it: the female share.
+ *
+ * Exported because a test asserts the *other* rates do not vary with seniority, and a
+ * test holding its own copy of this number would keep passing after somebody moved it.
+ */
+export const SENIOR_RANK = 40;
 const FEMALE_SHARE = 0.45;
 const FEMALE_SHARE_SENIOR = 0.33;
 
@@ -76,6 +82,12 @@ interface DraftPerson {
  * somebody already placed, which makes a single root and the absence of cycles
  * properties of the construction rather than something to check afterwards.
  */
+/**
+ * How far back a leaver's last day can fall. Spread across three years so the
+ * payroll history has departures in it rather than a cliff on one date.
+ */
+const MAX_YEARS_SINCE_LEAVING = 3;
+
 export function generatePeople(
   count: number,
   today: string,
@@ -83,8 +95,9 @@ export function generatePeople(
   random: SeededRandom,
 ): GeneratedPeople {
   const usedEmails = new Set<string>();
+  const names = new NameSource(random);
   const draft = Array.from({ length: count }, () =>
-    draftPerson(today, bands, random, usedEmails),
+    draftPerson(today, bands, random, names, usedEmails),
   ).sort((left, right) => right.rank - left.rank);
 
   const hierarchy = new Hierarchy(random);
@@ -102,7 +115,7 @@ export function generatePeople(
     });
   }
 
-  markLeavers(rows, random);
+  markLeavers(rows, today, random);
 
   return { rows, profiles };
 }
@@ -115,15 +128,39 @@ export function generatePeople(
  * Leavers keep their salary history: what they were paid is still what they were
  * paid, and the list of who is currently employed is a matter of status rather
  * than of deleting records.
+ *
+ * Each gets a last day somewhere between their hire date and today, which is what
+ * makes historic payroll answerable — without it a leaver looks as though they
+ * were never on the payroll at all, and every figure for last March is too small.
  */
-function markLeavers(rows: EmployeeRow[], random: SeededRandom): void {
+function markLeavers(rows: EmployeeRow[], today: string, random: SeededRandom): void {
   const managerIds = new Set(rows.map((row) => row.managerId).filter((id) => id != null));
 
   for (const row of rows) {
     if (!managerIds.has(row.id) && random.chance(LEFT_SHARE)) {
       row.status = 'LEFT';
+      /* Never before they were hired — the schema refuses it, and a leaving date
+         inside their employment is the only kind that means anything. */
+      const earliest =
+        row.hireDate > subtractYears(today, MAX_YEARS_SINCE_LEAVING)
+          ? row.hireDate
+          : subtractYears(today, MAX_YEARS_SINCE_LEAVING);
+      row.leftOn = randomDateBetween(earliest, today, random);
     }
   }
+}
+
+/** A day in the range, inclusive at both ends, on plain dates only. */
+function randomDateBetween(from: string, to: string, random: SeededRandom): string {
+  const span = daysBetween(from, to);
+  const date = new Date(`${from}T00:00:00Z`);
+  date.setUTCDate(date.getUTCDate() + Math.round(random.float(0, span)));
+  return date.toISOString().slice(0, 10);
+}
+
+function daysBetween(from: string, to: string): number {
+  const milliseconds = Date.parse(`${to}T00:00:00Z`) - Date.parse(`${from}T00:00:00Z`);
+  return Math.max(Math.round(milliseconds / (24 * 60 * 60 * 1000)), 0);
 }
 
 /**
@@ -182,14 +219,14 @@ function draftPerson(
   today: string,
   bands: SalaryBands,
   random: SeededRandom,
+  names: NameSource,
   usedEmails: Set<string>,
 ): DraftPerson {
   const level = weightedPick(JOB_LEVELS, random);
   const department = weightedPick(DEPARTMENTS, random);
   const country = weightedPick(COUNTRIES, random);
   const gender = chooseGender(level.rank, random);
-  const firstName = chooseFirstName(gender, random);
-  const lastName = random.pick(LAST_NAMES);
+  const { firstName, lastName } = names.next(gender);
   const band = bands.find(level.id, country.code);
 
   /* Tenure rises with seniority, so a manager is generally hired before the
@@ -244,10 +281,80 @@ function chooseGender(rank: number, random: SeededRandom): EmployeeRow['gender']
   return null;
 }
 
-function chooseFirstName(gender: EmployeeRow['gender'], random: SeededRandom): string {
-  if (gender === 'FEMALE') return random.pick(FIRST_NAMES_FEMALE);
-  if (gender === 'MALE') return random.pick(FIRST_NAMES_MALE);
-  return random.pick(FIRST_NAMES_NEUTRAL);
+/**
+ * Distinct names, by construction rather than by luck.
+ *
+ * Picking a first name and a surname independently cannot produce ten thousand
+ * distinct people: 75 first names and 260 surnames is 19,500 combinations, and drawing
+ * ten thousand times from a bag you keep refilling collides constantly — the earlier
+ * version of this, with 50 surnames, produced 2,624 duplicate names and eleven people
+ * called Ethan Nakamura. That is not a realism problem, it is a screen full of rows
+ * that look like the same person, on the one screen whose job is showing people.
+ *
+ * So each gender's combinations are enumerated, shuffled once with the seeded random,
+ * and handed out. Every name is different because a combination is never issued twice,
+ * and the same seed still produces the same company.
+ *
+ * Deliberately *not* the email's approach of appending a number until it is free:
+ * `ada.lovelace2@acme.test` is what a real directory does with a genuine clash, and
+ * "Ada Lovelace 2" is not a name.
+ */
+class NameSource {
+  private readonly unissued: Map<string, number[]>;
+
+  constructor(random: SeededRandom) {
+    this.unissued = new Map(
+      (
+        [
+          ['FEMALE', FIRST_NAMES_FEMALE],
+          ['MALE', FIRST_NAMES_MALE],
+          ['OTHER', FIRST_NAMES_NEUTRAL],
+        ] as const
+      ).map(([gender, firstNames]) => [
+        gender,
+        shuffled(firstNames.length * LAST_NAMES.length, random),
+      ]),
+    );
+  }
+
+  next(gender: EmployeeRow['gender']): { firstName: string; lastName: string } {
+    const firstNames = firstNamesFor(gender);
+    const combinations = this.unissued.get(gender ?? 'OTHER');
+    const combination = combinations?.pop();
+
+    if (combination === undefined) {
+      /* Louder than a duplicate name. Whoever raises the headcount past the number of
+         combinations needs to add names rather than discover the shortage in a demo. */
+      throw new Error(
+        `No unused names left for ${String(gender)}: ${String(firstNames.length * LAST_NAMES.length)} combinations exhausted.`,
+      );
+    }
+
+    const firstName = firstNames[Math.floor(combination / LAST_NAMES.length)];
+    const lastName = LAST_NAMES[combination % LAST_NAMES.length];
+
+    if (firstName === undefined || lastName === undefined) {
+      throw new Error(`Name combination ${String(combination)} is out of range.`);
+    }
+    return { firstName, lastName };
+  }
+}
+
+function firstNamesFor(gender: EmployeeRow['gender']): readonly string[] {
+  if (gender === 'FEMALE') return FIRST_NAMES_FEMALE;
+  if (gender === 'MALE') return FIRST_NAMES_MALE;
+  return FIRST_NAMES_NEUTRAL;
+}
+
+/** The numbers 0 to `count - 1`, in a seeded random order. Fisher-Yates. */
+function shuffled(count: number, random: SeededRandom): number[] {
+  const values = Array.from({ length: count }, (_unused, index) => index);
+
+  for (let index = values.length - 1; index > 0; index--) {
+    const swap = random.integer(0, index);
+    [values[index], values[swap]] = [values[swap] as number, values[index] as number];
+  }
+  return values;
 }
 
 function uniqueEmail(firstName: string, lastName: string, used: Set<string>): string {

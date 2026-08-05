@@ -1,8 +1,11 @@
 import { createDatabase } from './db/client';
 import type { Database, DatabaseHandle } from './db/database';
 import { createAuthService, type AuthService } from './services/auth';
+import { createBulkRaiseService, type BulkRaiseService } from './services/bulkRaise';
+import { createEmployeeCsvService, type EmployeeCsvService } from './services/employeeCsv';
 import { createEmployeeService, type EmployeeService } from './services/employees';
 import { createLookupService, type LookupService } from './services/lookups';
+import { createPayBandService, type PayBandService } from './services/payBands';
 import { createStatisticsService, type StatisticsService } from './services/statistics';
 
 /**
@@ -34,6 +37,8 @@ export interface ContainerConfig {
   jwtSecret: string;
   accessTokenTtlMinutes: number;
   refreshTokenTtlDays: number;
+  /** Whether the employee data is generated. Surfaced on the pay-gap screen. */
+  syntheticData: boolean;
 }
 
 export interface ContainerOverrides {
@@ -54,6 +59,9 @@ export interface Container {
   readonly employees: EmployeeService;
   readonly lookups: LookupService;
   readonly statistics: StatisticsService;
+  readonly payBands: PayBandService;
+  readonly employeeCsv: EmployeeCsvService;
+  readonly bulkRaise: BulkRaiseService;
   /** Releases everything the container opened. Called once, on shutdown. */
   close: () => Promise<void>;
 }
@@ -82,7 +90,18 @@ export function createContainer(
     ttlMs: overrides.lookupTtlMs,
   });
 
-  const statistics = createStatisticsService({ db: database.db, now });
+  const statistics = createStatisticsService({
+    db: database.db,
+    now,
+    syntheticData: config.syntheticData,
+  });
+  /* Takes the lookup service so a band write invalidates the cache the bands
+     ride along in. */
+  const payBands = createPayBandService({ db: database.db, now, lookups });
+  /* Takes the lookup service, not the database: the importer resolves department
+     and level *names*, which is exactly what that cache already holds. */
+  const employeeCsv = createEmployeeCsvService({ db: database.db, now, lookups });
+  const bulkRaise = createBulkRaiseService({ db: database.db });
 
   return {
     db: database.db,
@@ -90,6 +109,9 @@ export function createContainer(
     employees,
     lookups,
     statistics,
+    payBands,
+    employeeCsv,
+    bulkRaise,
     close: () => database.close(),
   };
 }

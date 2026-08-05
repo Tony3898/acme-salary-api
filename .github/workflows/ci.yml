@@ -1,0 +1,113 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# A second push to the same branch cancels the first: the older answer is about
+# code nobody will merge.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # Everything that needs no database, in the order that fails fastest and most
+  # cheaply. Kept separate from the job below so a lint error does not wait on a
+  # Postgres container starting, and so the migration drift check is *seen* to
+  # need no database — it compares schema.ts against the committed snapshot, and
+  # a check that needed a server could be satisfied by one somebody had pushed to.
+  static:
+    name: Lint, types, migrations
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Migrations describe schema.ts
+        run: npm run verify:migrations
+
+  # The suite runs on PGlite, which is a real Postgres compiled to WebAssembly —
+  # fast, and identical for everything the queries do. It is not identical in how
+  # values come *back*: node-postgres returns bigint as a string and PGlite as a
+  # number, and every salary in this system is a bigint. So the same commit is
+  # also pointed at a real PostgreSQL server, migrated and seeded exactly as a
+  # deploy would, and the driver-level differences are asserted there.
+  test:
+    name: Tests, and a real PostgreSQL
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        # The same major version docker-compose.yml runs locally, so a dialect
+        # difference cannot be something only one of the two environments sees.
+        # Pinned rather than "latest", which would move CI to a new major silently.
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: acme
+          # Not a secret, and deliberately not held as one. This database exists
+          # for the length of one job, listens only on the runner's loopback
+          # interface, and contains nothing but seeded synthetic data. A repository
+          # secret here would imply it guards something.
+          POSTGRES_PASSWORD: acme_ci
+          POSTGRES_DB: acme_salary
+        ports:
+          - 5432:5432
+        # Without this the first query races the server's startup.
+        options: >-
+          --health-cmd "pg_isready -U acme -d acme_salary"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      DATABASE_URL: postgresql://acme:acme_ci@localhost:5432/acme_salary
+      # 32 characters minimum, enforced by config.ts. A throwaway value for a
+      # throwaway database: nothing real is ever signed with it, and no secret
+      # belongs in a file anybody can read.
+      JWT_SECRET: ci-only-not-a-secret-0123456789abcdef
+      CORS_ORIGIN: http://localhost:5173
+      NODE_ENV: test
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      - name: Unit and HTTP tests, with coverage
+        run: npm run test:coverage
+
+      # Migrate rather than push. This is the path a deploy takes, so it is the
+      # path that has to be proved — including that the committed SQL applies to
+      # an empty database, which is the one thing the suite cannot check against
+      # a schema it builds from schema.ts.
+      - name: Apply migrations
+        run: npm run db:migrate
+
+      - name: Seed 10,000 employees
+        run: npm run seed
+
+      - name: Driver and dialect differences PGlite cannot show
+        run: npm run verify:pg
+
+      # Fires SQL payloads at the real server through every raw query, then
+      # checks the tables are still there. Meaningless against a mock.
+      - name: No user value reaches the SQL text
+        run: npm run verify:injection

@@ -34,6 +34,36 @@ export async function rawRows<TRow>(db: Database, query: SQL): Promise<TRow[]> {
   return (result as { rows: TRow[] }).rows;
 }
 
+/** Postgres' code for "a unique constraint says no". Same on every driver. */
+const UNIQUE_VIOLATION = '23505';
+
+/**
+ * Whether a failed write was this particular constraint refusing it.
+ *
+ * Needed because a uniqueness rule enforced by the database is the only kind that
+ * holds under concurrency — a read followed by a write has a window between them —
+ * and enforcing it there means the refusal arrives as a thrown driver error rather
+ * than as a value. Turning it back into a sentence for the user happens in the
+ * service; recognising it happens here, once.
+ *
+ * The chain is walked rather than the error inspected directly, because Drizzle
+ * wraps driver errors and the driver differs between production and the tests. The
+ * constraint name is required, so an unrelated uniqueness failure — a duplicate
+ * email, say — is never mistaken for this one and answered with the wrong message.
+ */
+export function isUniqueViolation(error: unknown, constraint: string): boolean {
+  for (let cause = error, depth = 0; cause !== null && cause !== undefined && depth < 5; depth++) {
+    const candidate = cause as { code?: unknown; constraint?: unknown; cause?: unknown };
+
+    if (candidate.code === UNIQUE_VIOLATION && candidate.constraint === constraint) {
+      return true;
+    }
+    cause = candidate.cause;
+  }
+
+  return false;
+}
+
 /**
  * A connection plus the means to release it. Held by the container, which closes
  * it on shutdown; tests supply their own so nothing opens a real pool.

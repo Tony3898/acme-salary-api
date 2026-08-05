@@ -116,7 +116,11 @@ describe('GET /api/stats/payroll-trend', () => {
 
     it('given the month being asked about, when returned, then it counts as actual', async () => {
       const trend = trendOf(
-        await trendAs('hr.admin@acme.test', { asOf: '2026-06-15', historyMonths: 1, horizonMonths: 1 }),
+        await trendAs('hr.admin@acme.test', {
+          asOf: '2026-06-15',
+          historyMonths: 1,
+          horizonMonths: 1,
+        }),
       );
 
       expect(monthOf(trend, '2026-06-01').kind).toBe('ACTUAL');
@@ -230,7 +234,11 @@ describe('GET /api/stats/payroll-trend', () => {
 
     it('given a month, when its headcount is reported, then it counts people with pay in force', async () => {
       const trend = trendOf(
-        await trendAs('hr.admin@acme.test', { asOf: '2026-08-05', historyMonths: 1, horizonMonths: 1 }),
+        await trendAs('hr.admin@acme.test', {
+          asOf: '2026-08-05',
+          historyMonths: 1,
+          horizonMonths: 1,
+        }),
       );
 
       const august = monthOf(trend, '2026-08-01');

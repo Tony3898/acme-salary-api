@@ -75,6 +75,15 @@ export const employees = pgTable(
     /** Self-reference: drives the recursive "everyone under this manager" scope. */
     managerId: integer('manager_id').references((): AnyPgColumn => employees.id),
     status: employeeStatusEnum('status').notNull().default('ACTIVE'),
+    /**
+     * The last day they were employed. NULL while they still are.
+     *
+     * A date rather than a flag beside `status`, because without it "who was on
+     * the payroll last March" has no answer — a leaver looks as though they were
+     * never there, and every historic total is quietly too small. Status alone
+     * says *whether*; only this says *when*.
+     */
+    leftOn: date('left_on', { mode: 'string' }),
     gender: genderEnum('gender'),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   },
@@ -86,15 +95,39 @@ export const employees = pgTable(
     index('employees_job_level_idx').on(table.jobLevelId),
     index('employees_country_idx').on(table.country),
     index('employees_status_idx').on(table.status),
+    /* Both or neither, enforced here so no code path can produce a leaver with no
+       leaving date or an active employee carrying one. The pair is read together
+       everywhere — a historic payroll figure asks "had they left by then?" and
+       needs the answer to be a date, not a guess. */
+    check(
+      'employee_left_on_matches_status',
+      sql`(${table.status} = 'LEFT') = (${table.leftOn} IS NOT NULL)`,
+    ),
+    // Nobody leaves before they arrive, and a typo here silently rewrites history.
+    check(
+      'employee_left_on_after_hire',
+      sql`${table.leftOn} IS NULL OR ${table.leftOn} >= ${table.hireDate}`,
+    ),
   ],
 );
+
+/**
+ * The index that refuses a duplicate pay record.
+ *
+ * Named here because two places need the same string: the index below, and the code
+ * that recognises the violation it raises. A constraint whose name is typed out twice
+ * is one rename away from an error message nobody catches.
+ */
+export const COMPENSATION_UNIQUE_RECORD = 'compensation_no_identical_record_idx';
 
 /**
  * Append-only. A raise inserts a row; nothing here is ever updated, which is
  * what makes it an audit trail as well as a salary history.
  *
- * Not unique on (employee_id, effective_from): a correction issued the same day
- * is legitimate. Reads break the tie with `id DESC`.
+ * Not unique on (employee_id, effective_from): a correction issued the same day to a
+ * *different* figure is legitimate, and reads break the tie with `id DESC`. It **is**
+ * unique on the whole tuple, which is what makes refusing a duplicate atomic rather
+ * than a check followed by a write — see the index below.
  */
 export const compensationRecords = pgTable(
   'compensation_records',
@@ -123,6 +156,27 @@ export const compensationRecords = pgTable(
     ),
     // Covers "current salary as of a date", which every list query needs.
     index('compensation_employee_effective_idx').on(table.employeeId, table.effectiveFrom.desc()),
+    /**
+     * The same amount, in the same currency, on the same day, for the same person.
+     *
+     * That is a double-submitted button or a retried request, never a decision
+     * anybody made twice — a correction to the same figure on the same day changes
+     * nothing, so refusing it costs nothing. A *different* figure on the same day is
+     * still allowed, which is what makes this the whole tuple rather than the pair.
+     *
+     * Here rather than in application code, and *only* here. Reading "is there one
+     * already?" and then inserting leaves a window between the two: two requests
+     * arriving together both read "no" and both write — which in an append-only table
+     * is a raise paid twice with no way to undo it. So the check is the write. The
+     * application turns the violation into its message rather than trying to predict
+     * it, which is both atomic and one query instead of two.
+     */
+    uniqueIndex(COMPENSATION_UNIQUE_RECORD).on(
+      table.employeeId,
+      table.effectiveFrom,
+      table.amountMinor,
+      table.currency,
+    ),
   ],
 );
 

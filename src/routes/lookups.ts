@@ -1,5 +1,5 @@
 import { Router, type RequestHandler } from 'express';
-import { HTTP_STATUS } from '../errors';
+import { HTTP_STATUS } from '../shared/errors';
 import type { LookupService } from '../services/lookups';
 
 /** How long a browser may reuse this before asking again. */

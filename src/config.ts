@@ -21,6 +21,16 @@ const schema = z.object({
      configuration, and overridable so a public deployment is not using the
      password printed in the README. */
   SEED_DEMO_PASSWORD: z.string().min(8).default('AcmeDemo!2026'),
+  /* Whether the employee data is generated rather than real. The pay-gap screen
+     says so, because the gap in the seeded data was introduced on purpose —
+     randomly generated salaries show none, and a screen that always reads 0%
+     demonstrates nothing. Defaults to true because that is what a fresh checkout
+     has; the deployment that loads real people sets it to false, and the caveat
+     disappears from one place rather than from however many screens repeat it. */
+  SYNTHETIC_DATA: z
+    .enum(['true', 'false'])
+    .default('true')
+    .transform((value) => value === 'true'),
   /* How many reverse proxies sit in front of this process. 0 locally; 1 behind a
      single nginx or load balancer. Used for the client IP, which is what the rate
      limiter counts — so guessing high lets a client forge X-Forwarded-For and

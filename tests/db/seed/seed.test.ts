@@ -6,6 +6,7 @@ import {
   salaryBands,
   users,
 } from '../../../src/db/schema';
+import { SENIOR_RANK } from '../../../src/db/seed/people';
 import { seed } from '../../../src/db/seed/seed';
 import { useTestDatabases, type TestDb } from '../../helpers/testDb';
 
@@ -42,6 +43,26 @@ describe('seed', () => {
 
   it('given a headcount, when seeded, then exactly that many employees exist', async () => {
     expect(await countOf(employees)).toBe(SEED_OPTIONS.employeeCount);
+  });
+
+  it('given the generated people, when their names are compared, then no two share one', async () => {
+    /* Two people with the same name is a screen that looks broken, on the one screen
+       whose job is showing people — and it used to happen 2,624 times, with eleven
+       Ethan Nakamuras, because a first name and a surname were picked independently
+       from pools whose product was smaller than the headcount. No number of names in
+       the pools fixes that: drawing at random from a bag you keep refilling collides.
+       So combinations are issued rather than drawn, and this is the assertion that
+       says so. */
+    const [row] = await db
+      .select({
+        people: sql<number>`count(*)::int`,
+        names: sql<number>`count(DISTINCT ${employees.fullName})::int`,
+        addresses: sql<number>`count(DISTINCT ${employees.email})::int`,
+      })
+      .from(employees);
+
+    expect(row?.names).toBe(row?.people);
+    expect(row?.addresses).toBe(row?.people);
   });
 
   it('given the same seed, when run twice on separate databases, then the data is identical', async () => {
@@ -286,23 +307,31 @@ describe('seed', () => {
     expect(row?.orphaned).toBe(0);
   });
 
-  it('given each job level, when unrecorded gender is measured, then the rate does not vary with seniority', async () => {
+  it('given seniority, when unrecorded gender is measured, then the rate does not vary with it', async () => {
     /* It once ran from 5% at junior levels to 20% at director, purely as an
        arithmetic accident. Because the pay-gap analysis hides small groups, that
-       quietly removed senior data — which is where a gap matters most. */
-    const rows = await db
+       quietly removed senior data — which is where a gap matters most.
+
+       Grouped as junior against senior rather than per level, which is both what the
+       claim is about and the only place the generator branches on rank. Per level, a
+       300-person seed leaves some buckets at a dozen people, where the noise is wider
+       than the drift being looked for — the previous version of this test passed
+       because of the particular random stream rather than because the rate was flat,
+       and it failed the moment an unrelated change shifted that stream. */
+    const [row] = await db
       .select({
-        rank: jobLevels.rank,
-        unrecordedShare: sql<number>`
-          (count(*) FILTER (WHERE ${employees.gender} IS NULL))::float / count(*)`,
+        junior: sql<number>`
+          (count(*) FILTER (WHERE ${employees.gender} IS NULL AND ${jobLevels.rank} < ${SENIOR_RANK}))::float
+          / count(*) FILTER (WHERE ${jobLevels.rank} < ${SENIOR_RANK})`,
+        senior: sql<number>`
+          (count(*) FILTER (WHERE ${employees.gender} IS NULL AND ${jobLevels.rank} >= ${SENIOR_RANK}))::float
+          / count(*) FILTER (WHERE ${jobLevels.rank} >= ${SENIOR_RANK})`,
       })
       .from(employees)
-      .innerJoin(jobLevels, sql`${jobLevels.id} = ${employees.jobLevelId}`)
-      .groupBy(jobLevels.rank);
-    const shares = rows.map((row) => Number(row.unrecordedShare));
+      .innerJoin(jobLevels, sql`${jobLevels.id} = ${employees.jobLevelId}`);
 
-    // Sampling noise at 300 people is wide, but a 4x drift is not noise.
-    expect(Math.max(...shares) - Math.min(...shares)).toBeLessThan(0.1);
+    // A 4x drift is what the accident produced; this catches anything of that order.
+    expect(Math.abs(Number(row?.junior) - Number(row?.senior))).toBeLessThan(0.1);
   });
 
   it('given the demo accounts, when seeded, then there is one per role and scoped roles link to a person', async () => {

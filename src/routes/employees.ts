@@ -1,88 +1,63 @@
 import { Router, type RequestHandler } from 'express';
 import { z } from 'zod';
-import { isValidIsoDate } from '../domain/dates';
 import { SUPPORTED_CURRENCIES } from '../domain/money';
-import { HTTP_STATUS, notFound } from '../errors';
+import { HTTP_STATUS, notFound } from '../shared/errors';
 import { authContext } from '../middleware/requireAuth';
 import { EMPLOYEE_SORT_FIELDS } from '../repositories/employees';
-import { DEFAULT_PAGE_SIZE, PAGE_SIZES, type EmployeeService } from '../services/employees';
+import type { EmployeeService } from '../services/employees';
+import type { PayBandService } from '../services/payBands';
+import {
+  amountSchema,
+  asOfSchema,
+  countrySchema,
+  employeeFilterSchema,
+  employeeStatusSchema,
+  idParamSchema,
+  isoDateSchema,
+  pagingSchema,
+  MAX_EMAIL_LENGTH,
+  MAX_JOB_TITLE_LENGTH,
+  MAX_NAME_LENGTH,
+  MAX_REASON_LENGTH,
+  MAX_SEARCH_LENGTH,
+  positiveIdSchema,
+} from './schemas';
 
 /**
- * Reading employees. Every parameter is validated here, at the boundary, and
- * nothing reaches the query that was not on a list decided in advance.
+ * One person's record: finding them, adding them, and the two things that change
+ * about them.
+ *
+ * Every parameter is validated here, at the boundary, and nothing reaches the
+ * query that was not on a list decided in advance.
  */
 
-/** Two letters, matching the column. Upper-cased so `gb` and `GB` are one filter. */
-const COUNTRY_PATTERN = /^[A-Za-z]{2}$/;
-/** Long enough for a name or an address, short enough not to be a payload. */
-const MAX_SEARCH_LENGTH = 100;
-
-const listQuerySchema = z.object({
-  page: z.coerce.number().int().positive().default(1),
-  /* A closed set rather than a maximum: an arbitrary size lets a caller ask for
-     10,000 rows in one request, and the point of paging is that nobody can. */
-  pageSize: z.coerce
-    .number()
-    .int()
-    .refine((value): value is (typeof PAGE_SIZES)[number] => PAGE_SIZES.includes(value as never), {
-      message: `pageSize must be one of ${PAGE_SIZES.join(', ')}.`,
-    })
-    .default(DEFAULT_PAGE_SIZE),
+const listQuerySchema = pagingSchema.extend({
+  ...employeeFilterSchema.shape,
   /* The sort column becomes part of the statement and cannot be a bound
      parameter, so anything not on this list is refused rather than sanitised. */
   sortBy: z.enum(EMPLOYEE_SORT_FIELDS).default('name'),
   sortDir: z.enum(['asc', 'desc']).default('asc'),
   q: z.string().trim().max(MAX_SEARCH_LENGTH).optional(),
-  country: z
-    .string()
-    .regex(COUNTRY_PATTERN, 'country must be a two-letter code.')
-    .transform((value) => value.toUpperCase())
-    .optional(),
-  departmentId: z.coerce.number().int().positive().optional(),
-  jobLevelId: z.coerce.number().int().positive().optional(),
-  status: z.enum(['ACTIVE', 'LEFT']).optional(),
-  /* A real calendar day, not merely the right shape: 2026-02-31 would otherwise
-     reach Postgres and be rejected there as a 500 instead of a 400. */
-  asOf: z.string().refine(isValidIsoDate, 'asOf must be a date as YYYY-MM-DD.').optional(),
+  status: employeeStatusSchema.optional(),
+  /* A closed set, because it becomes a condition rather than a value — and because
+     the names have to match the ones on a person's own row or a link from the
+     pay-bands screen would show a different set of people. */
+  bandFit: z.enum(['BELOW', 'WITHIN', 'ABOVE', 'NO_BAND', 'NO_PAY', 'OTHER_CURRENCY']).optional(),
+  asOf: isoDateSchema('asOf').optional(),
 });
 
-/** A date on its own, for the endpoints that take nothing else. */
-const asOfSchema = z.object({
-  asOf: z.string().refine(isValidIsoDate, 'asOf must be a date as YYYY-MM-DD.').optional(),
+/** The needs-attention list: the same filters and the same paging as the list. */
+const attentionQuerySchema = pagingSchema.extend({
+  ...employeeFilterSchema.shape,
+  asOf: isoDateSchema('asOf').optional(),
 });
 
-/**
- * `:id` from the path. Coerced and checked here so a request for
- * /api/employees/abc is a 400 about the parameter rather than a database error
- * about a failed cast.
- */
-const idParamSchema = z.object({ id: z.coerce.number().int().positive() });
-
-/** A note on a raise, not an essay. Long enough for "Promotion to Senior, Q3 review". */
-const MAX_REASON_LENGTH = 500;
-
-/**
- * A new salary.
- *
- * The amount is a **string**, deliberately. JSON numbers are doubles, so 85000.1
- * arrives as 85000.099999999999 and a client cannot express an exact amount even
- * when it has one. A string carries the digits the user typed, and
- * `parseAmountToMinor` refuses anything that is not a clean two-decimal figure
- * rather than rounding it into something plausible.
- */
 const recordPaySchema = z.object({
-  /* Bounded so a rejection message, which quotes what was sent, cannot be made
-     into a payload by sending a very long one. No real amount is 32 characters. */
-  amount: z.string().trim().min(1, 'An amount is required.').max(32),
+  amount: amountSchema,
   currency: z.enum(SUPPORTED_CURRENCIES),
-  effectiveFrom: z.string().refine(isValidIsoDate, 'effectiveFrom must be a date as YYYY-MM-DD.'),
+  effectiveFrom: isoDateSchema('effectiveFrom'),
   reason: z.string().trim().max(MAX_REASON_LENGTH).optional(),
 });
-
-/** Long enough for the longest real names; short enough not to be a payload. */
-const MAX_NAME_LENGTH = 120;
-const MAX_EMAIL_LENGTH = 254;
-const MAX_JOB_TITLE_LENGTH = 120;
 
 /**
  * A new employee.
@@ -102,30 +77,39 @@ const createEmployeeSchema = z.object({
     .trim()
     .toLowerCase()
     .pipe(z.email('That is not an email address.').max(MAX_EMAIL_LENGTH)),
-  country: z
-    .string()
-    .regex(COUNTRY_PATTERN, 'country must be a two-letter code.')
-    .transform((value) => value.toUpperCase()),
-  departmentId: z.coerce.number().int().positive(),
-  jobLevelId: z.coerce.number().int().positive(),
+  country: countrySchema,
+  departmentId: positiveIdSchema,
+  jobLevelId: positiveIdSchema,
   jobTitle: z.string().trim().max(MAX_JOB_TITLE_LENGTH).optional(),
-  hireDate: z.string().refine(isValidIsoDate, 'hireDate must be a date as YYYY-MM-DD.'),
-  managerId: z.coerce.number().int().positive().optional(),
-  status: z.enum(['ACTIVE', 'LEFT']).optional(),
+  hireDate: isoDateSchema('hireDate'),
+  managerId: positiveIdSchema.optional(),
+  status: employeeStatusSchema.optional(),
+  leftOn: isoDateSchema('leftOn').optional(),
   startingPay: z
     .object({
-      amount: z.string().trim().min(1, 'An amount is required.').max(32),
+      amount: amountSchema,
       currency: z.enum(SUPPORTED_CURRENCIES),
-      effectiveFrom: z
-        .string()
-        .refine(isValidIsoDate, 'effectiveFrom must be a date as YYYY-MM-DD.')
-        .optional(),
+      effectiveFrom: isoDateSchema('effectiveFrom').optional(),
     })
     .optional(),
 });
 
+/**
+ * Ending somebody's employment, or reversing it.
+ *
+ * Whether the date is required depends on the status, and that rule lives in the
+ * service rather than here: it is the same rule the create path needs, and a
+ * `superRefine` would put half of it in one file and half in another. The schema's
+ * job is to establish that a date is a date.
+ */
+const changeStatusSchema = z.object({
+  status: employeeStatusSchema,
+  leftOn: isoDateSchema('leftOn').optional(),
+});
+
 export interface EmployeeRouterDeps {
   employees: EmployeeService;
+  payBands: PayBandService;
   requireAuth: RequestHandler;
   /** Only HR Admin may write. Passed in so the router does not build its own guard. */
   requireHrAdmin: RequestHandler;
@@ -150,6 +134,7 @@ export function createEmployeeRouter(deps: EmployeeRouterDeps): Router {
         departmentId: query.departmentId,
         jobLevelId: query.jobLevelId,
         status: query.status,
+        bandFit: query.bandFit,
         asOf: query.asOf,
       },
     );
@@ -173,6 +158,7 @@ export function createEmployeeRouter(deps: EmployeeRouterDeps): Router {
         hireDate: body.hireDate,
         ...(body.managerId === undefined ? {} : { managerId: body.managerId }),
         ...(body.status === undefined ? {} : { status: body.status }),
+        ...(body.leftOn === undefined ? {} : { leftOn: body.leftOn }),
         ...(body.startingPay === undefined ? {} : { startingPay: body.startingPay }),
         /* From the verified token, never from the body. A client that can name
            its own author can sign somebody else's name to a pay record. */
@@ -182,6 +168,24 @@ export function createEmployeeRouter(deps: EmployeeRouterDeps): Router {
 
     // 201 with the record: the client navigates straight to it, no second call.
     res.status(HTTP_STATUS.CREATED).json(detail);
+  });
+
+  /**
+   * Registered before `/:id`, and it has to be.
+   *
+   * Express matches in order, so with these the other way round "attention" would
+   * be read as an id, fail the numeric coercion, and answer a 400 about a
+   * parameter nobody sent.
+   */
+  router.get('/attention', deps.requireAuth, async (req, res) => {
+    const query = attentionQuerySchema.parse(req.query);
+    const { role, employeeId } = authContext(req);
+
+    const page = await deps.payBands.needsAttention({ role, employeeId }, query);
+
+    // Individual salaries. Never held by anything in between.
+    res.setHeader('Cache-Control', 'no-store');
+    res.status(HTTP_STATUS.OK).json(page);
   });
 
   router.get('/:id', deps.requireAuth, async (req, res) => {
@@ -198,6 +202,28 @@ export function createEmployeeRouter(deps: EmployeeRouterDeps): Router {
       /* 404 rather than 403, and the same message either way. A 403 on somebody
          else's record confirms that the record exists — which is enough to walk
          the ids and learn the shape of the company. */
+      throw notFound('No such employee.');
+    }
+
+    res.status(HTTP_STATUS.OK).json(detail);
+  });
+
+  router.patch('/:id/status', deps.requireAuth, deps.requireHrAdmin, async (req, res) => {
+    const { id } = idParamSchema.parse(req.params);
+    const body = changeStatusSchema.parse(req.body);
+    const { role, employeeId, userId } = authContext(req);
+
+    const detail = await deps.employees.changeStatus(
+      { role, employeeId },
+      {
+        employeeId: id,
+        status: body.status,
+        ...(body.leftOn === undefined ? {} : { leftOn: body.leftOn }),
+        changedByUserId: userId,
+      },
+    );
+
+    if (detail === null) {
       throw notFound('No such employee.');
     }
 

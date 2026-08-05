@@ -1,4 +1,4 @@
-import { logger, maskEmail, redact } from '../src/logger';
+import { logger, maskEmail, redact } from '../src/shared/logger';
 
 describe('redact', () => {
   it.each([

@@ -1,4 +1,4 @@
-import { createCachedValue, type CachedValue } from '../cache';
+import { createCachedValue, type CachedValue } from '../shared/cache';
 import type { Database } from '../db/database';
 import { loadLookupData, type LookupData } from '../repositories/lookups';
 

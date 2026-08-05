@@ -5,7 +5,8 @@ import {
   fxRates,
   jobLevels,
 } from '../../src/db/schema';
-import { computeStatistics, MIN_GROUP_FOR_MEDIAN } from '../../src/repositories/statistics';
+import { MIN_GROUP_FOR_MEDIAN } from '../../src/domain/disclosure';
+import { computeStatistics } from '../../src/repositories/statistics';
 import { percentileCents } from '../helpers/percentile';
 import { useTestDatabases, type TestDb } from '../helpers/testDb';
 
@@ -78,6 +79,8 @@ describe('computeStatistics', () => {
           jobLevelId: person.level === 'senior' ? senior : junior,
           hireDate: '2020-01-01',
           status: person.status ?? 'ACTIVE',
+          // The schema pairs the two: a leaver has a leaving date or does not exist.
+          leftOn: person.status === 'LEFT' ? '2026-01-31' : null,
         })
         .returning({ id: employees.id });
 
@@ -417,6 +420,31 @@ describe('computeStatistics', () => {
         if (index > 0) {
           expect(bucket.fromUsdMinor).toBe(distribution[index - 1]?.toUsdMinor);
         }
+      }
+    });
+
+    it('given a range that does not divide evenly, when bucketed, then each bar is labelled with a range that holds the people in it', async () => {
+      /* Ten buckets over 9,999 cents, so every interior boundary falls between two
+         cents. How that is rounded is the whole test: dividing as bigint truncates,
+         which drags each printed boundary up to nine cents below the boundary
+         `width_bucket` actually counted against — and somebody sitting in that gap
+         reads as being in a bar that the numbers say is empty.
+
+         The person on 999 is deliberately one cent under the first true boundary of
+         999.9, which is exactly where the two roundings disagree. */
+      const base = 1_000_000;
+      const amounts = [base, base + 999, base + 9_999];
+      await setUp(
+        amounts.map((amountMinor, index) => ({ name: `P${String(index)}`, amountMinor })),
+      );
+
+      const { distribution } = await computeStatistics(db, baseQuery);
+
+      for (const bucket of distribution) {
+        const inRange = amounts.filter(
+          (amount) => amount >= bucket.fromUsdMinor && amount <= bucket.toUsdMinor,
+        );
+        expect(inRange).toHaveLength(bucket.employees);
       }
     });
 

@@ -6,6 +6,7 @@ const CONFIG = {
   jwtSecret: 'test-secret-that-is-long-enough-32',
   accessTokenTtlMinutes: 15,
   refreshTokenTtlDays: 7,
+  syntheticData: true,
 };
 
 /**

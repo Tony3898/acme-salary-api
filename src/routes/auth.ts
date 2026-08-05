@@ -6,7 +6,7 @@ import {
   type Response,
 } from 'express';
 import { z } from 'zod';
-import { HTTP_STATUS } from '../errors';
+import { HTTP_STATUS } from '../shared/errors';
 import { authContext } from '../middleware/requireAuth';
 import type { AuthService, Session, SessionUser } from '../services/auth';
 

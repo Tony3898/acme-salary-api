@@ -3,12 +3,15 @@ import cors from 'cors';
 import express, { type Express } from 'express';
 import helmet from 'helmet';
 import type { Container } from './container';
-import { HTTP_STATUS } from './errors';
+import { HTTP_STATUS } from './shared/errors';
 import { errorHandler, notFoundHandler } from './middleware/errorHandler';
 import { createRateLimiter } from './middleware/rateLimit';
 import { requireAuth } from './middleware/requireAuth';
 import { requireRole } from './middleware/requireRole';
 import { createAuthRouter } from './routes/auth';
+import { createBandRouter } from './routes/bands';
+import { createBulkRaiseRouter } from './routes/bulkRaise';
+import { createEmployeeCsvRouter } from './routes/employeeCsv';
 import { createEmployeeRouter } from './routes/employees';
 import { createLookupRouter } from './routes/lookups';
 import { createStatisticsRouter } from './routes/statistics';
@@ -21,8 +24,16 @@ import { createStatisticsRouter } from './routes/statistics';
  * The app is a shape; the container is the instance.
  */
 
-/** Enough for a login or a filter; the CSV importer will raise its own route's limit. */
+/** Enough for a login or a filter. The CSV importer raises its own route's limit. */
 const JSON_BODY_LIMIT = '100kb';
+
+/**
+ * A spreadsheet of ten thousand people is about 1.5 MB, so this leaves room for a
+ * larger company and for the long job titles somebody will have. Applied to one
+ * route, so the limit that lets a file through does not also let a 5 MB login
+ * attempt through.
+ */
+const CSV_BODY_LIMIT = '5mb';
 
 export interface AppOptions {
   container: Container;
@@ -96,13 +107,52 @@ export function createApp(options: AppOptions): Express {
     }),
   );
 
+  /**
+   * Before the employee router, and it has to be.
+   *
+   * Express matches mounted routers in order, so with these the other way round
+   * `GET /api/employees/export` would reach the `/:id` route first, fail the
+   * numeric coercion, and answer a 400 about a parameter nobody sent.
+   */
+  app.use(
+    '/api/employees',
+    createEmployeeCsvRouter({
+      employeeCsv: options.container.employeeCsv,
+      requireAuth: authenticated,
+      requireHrAdmin: requireRole('HR_ADMIN'),
+      /* Raw text, and only here. `type` is exact, so a client sending JSON to this
+         route gets an empty body and a clear complaint rather than having its
+         payload read as a CSV with one very long column. */
+      csvBodyParser: express.text({ type: 'text/csv', limit: CSV_BODY_LIMIT }),
+    }),
+  );
+
   app.use(
     '/api/employees',
     createEmployeeRouter({
       employees: options.container.employees,
+      payBands: options.container.payBands,
       requireAuth: authenticated,
       /* Read-only is the default for every other role, including HR Viewer.
          Recording pay is the one thing on this router that writes. */
+      requireHrAdmin: requireRole('HR_ADMIN'),
+    }),
+  );
+
+  app.use(
+    '/api/compensation/bulk',
+    createBulkRaiseRouter({
+      bulkRaise: options.container.bulkRaise,
+      requireAuth: authenticated,
+      requireHrAdmin: requireRole('HR_ADMIN'),
+    }),
+  );
+
+  app.use(
+    '/api/bands',
+    createBandRouter({
+      payBands: options.container.payBands,
+      requireAuth: authenticated,
       requireHrAdmin: requireRole('HR_ADMIN'),
     }),
   );

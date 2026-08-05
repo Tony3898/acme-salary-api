@@ -1,25 +1,27 @@
-import type { Database } from '../db/database';
+import { isUniqueViolation, type Database } from '../db/database';
+import { COMPENSATION_UNIQUE_RECORD } from '../db/schema';
 import { accessScopeFor, type ScopeSubject } from '../domain/accessScope';
-import { currentRecordIndex, withChanges, type PayChange } from '../domain/compensation';
 import { toIsoDate } from '../domain/dates';
 import { parseAmountToMinor, type Currency } from '../domain/money';
-import { AppError, HTTP_STATUS } from '../errors';
-import { logger } from '../logger';
+import { AppError, HTTP_STATUS } from '../shared/errors';
+import { logger } from '../shared/logger';
+import type { BandFitFilter } from '../repositories/payBands';
 import {
-  countDirectReports,
+  countActiveDirectReports,
   emailIsTaken,
   findEmployeeById,
   findMissingReferences,
-  hasIdenticalCompensationRecord,
   insertCompensationRecord,
   insertEmployee,
-  listCompensationHistory,
   listEmployees,
-  type CompensationHistoryEntry,
+  updateEmployeeStatus,
   type EmployeeListRow,
   type EmployeeSortField,
   type SortDirection,
 } from '../repositories/employees';
+import { findEmployeeDetail, type EmployeeDetail } from './employeeDetail';
+
+export type { EmployeeDetail, EmployeeHistoryEntry } from './employeeDetail';
 
 /**
  * Reading the employee list.
@@ -44,6 +46,8 @@ export interface EmployeeListRequest {
   departmentId?: number;
   jobLevelId?: number;
   status?: 'ACTIVE' | 'LEFT';
+  /** How their pay sits against their band. See the repository for the six outcomes. */
+  bandFit?: BandFitFilter;
   /** Defaults to today. Salaries are reported as they stood on this date. */
   asOf?: string;
 }
@@ -60,31 +64,6 @@ export interface EmployeeListPage {
 export interface EmployeeServiceDeps {
   db: Database;
   now: () => Date;
-}
-
-/**
- * A pay record with what it changed, and where it sits relative to the date
- * being viewed.
- *
- * The flags are computed here rather than left to the UI because the rule for
- * "which record is in force" has to be the same one the list query uses. Two
- * implementations of it eventually disagree, and the disagreement looks like a
- * salary that is right on one screen and wrong on the next.
- */
-export interface EmployeeHistoryEntry extends CompensationHistoryEntry {
-  change: PayChange;
-  /** The record in force on the date being viewed. Exactly one, or none. */
-  isCurrent: boolean;
-  /** Signed off but not yet started. Shown, so the same raise is not given twice. */
-  isScheduled: boolean;
-}
-
-export interface EmployeeDetail {
-  employee: EmployeeListRow;
-  directReports: number;
-  /** Oldest first, so the changes read down the page in the order they happened. */
-  history: EmployeeHistoryEntry[];
-  asOf: string;
 }
 
 export interface EmployeeService {
@@ -109,6 +88,32 @@ export interface EmployeeService {
   recordPay: (subject: ScopeSubject, request: RecordPayRequest) => Promise<EmployeeDetail | null>;
   /** Adds somebody, and returns their record as it now reads. */
   create: (subject: ScopeSubject, request: CreateEmployeeRequest) => Promise<EmployeeDetail>;
+  /** Marks somebody as having left, or brings them back. */
+  changeStatus: (
+    subject: ScopeSubject,
+    request: ChangeStatusRequest,
+  ) => Promise<EmployeeDetail | null>;
+}
+
+/**
+ * Ending somebody's employment, or reversing that.
+ *
+ * Deliberately not a general "update the employee" request. Status is the one
+ * field on an employee whose change has consequences elsewhere — it moves them in
+ * and out of every payroll total, every median and every band comparison — so it
+ * is its own operation with its own rules, rather than one key in a patch body
+ * where those rules would have to be found before they could be applied.
+ */
+export interface ChangeStatusRequest {
+  employeeId: number;
+  status: 'ACTIVE' | 'LEFT';
+  /**
+   * Their last day. Required when marking somebody as having left; refused when
+   * bringing them back, where there is no such day.
+   */
+  leftOn?: string;
+  /** The account making the change, from the verified token rather than the body. */
+  changedByUserId: number;
 }
 
 export interface CreateEmployeeRequest {
@@ -121,6 +126,8 @@ export interface CreateEmployeeRequest {
   hireDate: string;
   managerId?: number;
   status?: 'ACTIVE' | 'LEFT';
+  /** Required when the status is LEFT. Ignored otherwise. */
+  leftOn?: string;
   /**
    * What they start on, if it is known. Optional because a record is often
    * created before the offer is signed off, and an invented starting salary is
@@ -172,42 +179,18 @@ function parseAmount(amount: string): number {
 
 export function createEmployeeService(deps: EmployeeServiceDeps): EmployeeService {
   /**
-   * Declared once and called from two places, rather than one method reaching
-   * for the other through `this`. `this` in an object literal depends on how the
-   * method was called, so a caller doing `const { recordPay } = employees` would
-   * break it — a bug that appears at the call site and is fixed here.
+   * The record as it now stands, which every write below answers with.
+   *
+   * A local function rather than one method reaching for another through `this`.
+   * `this` in an object literal depends on how the method was called, so a caller
+   * doing `const { recordPay } = employees` would break it — a bug that appears
+   * at the call site and is fixed here.
    */
-  async function findDetail(
+  const findDetail = (
     subject: ScopeSubject,
     id: number,
     asOf: string,
-  ): Promise<EmployeeDetail | null> {
-    const scope = accessScopeFor(subject);
-
-    const employee = await findEmployeeById(deps.db, { id, scope, asOf });
-    if (employee === null) {
-      return null;
-    }
-
-    /* Only after the scope has allowed the record — fetching the history first
-       and filtering afterwards would read one person's pay to decide whether to
-       show it to somebody else. The two reads *after* that gate are independent
-       of each other, so they go together: three round trips became two, and
-       neither tells the other anything. */
-    const [records, directReports] = await Promise.all([
-      listCompensationHistory(deps.db, id),
-      countDirectReports(deps.db, id),
-    ]);
-    const currentIndex = currentRecordIndex(records, asOf);
-
-    const history = withChanges(records).map((entry, index) => ({
-      ...entry,
-      isCurrent: index === currentIndex,
-      isScheduled: entry.effectiveFrom > asOf,
-    }));
-
-    return { employee, directReports, history, asOf };
-  }
+  ): Promise<EmployeeDetail | null> => findEmployeeDetail(deps.db, subject, id, asOf);
 
   return {
     async list(subject: ScopeSubject, request: EmployeeListRequest): Promise<EmployeeListPage> {
@@ -272,29 +255,29 @@ export function createEmployeeService(deps: EmployeeServiceDeps): EmployeeServic
         );
       }
 
-      const duplicate = await hasIdenticalCompensationRecord(deps.db, {
-        employeeId: request.employeeId,
-        amountMinor,
-        currency: request.currency,
-        effectiveFrom: request.effectiveFrom,
-      });
-
-      if (duplicate) {
-        throw new AppError(
-          HTTP_STATUS.BAD_REQUEST,
-          'INVALID_REQUEST',
-          'That exact record already exists for this date. It has not been added again.',
-        );
+      /* The duplicate check is the insert itself. Asking first and then writing
+         leaves a window in which a double-clicked button writes the raise twice, and
+         the table is append-only — there is no undo. So the write goes ahead and the
+         constraint's refusal becomes the message. */
+      try {
+        await insertCompensationRecord(deps.db, {
+          employeeId: request.employeeId,
+          amountMinor,
+          currency: request.currency,
+          effectiveFrom: request.effectiveFrom,
+          reason: request.reason ?? null,
+          createdBy: request.recordedByUserId,
+        });
+      } catch (error) {
+        if (isUniqueViolation(error, COMPENSATION_UNIQUE_RECORD)) {
+          throw new AppError(
+            HTTP_STATUS.BAD_REQUEST,
+            'INVALID_REQUEST',
+            'That exact record already exists for this date. It has not been added again.',
+          );
+        }
+        throw error;
       }
-
-      await insertCompensationRecord(deps.db, {
-        employeeId: request.employeeId,
-        amountMinor,
-        currency: request.currency,
-        effectiveFrom: request.effectiveFrom,
-        reason: request.reason ?? null,
-        createdBy: request.recordedByUserId,
-      });
 
       logger.info('compensation.recorded', {
         employeeId: request.employeeId,
@@ -351,6 +334,16 @@ export function createEmployeeService(deps: EmployeeServiceDeps): EmployeeServic
         throw invalidReference('manager');
       }
 
+      /* A record can be created for somebody who has already left — historic
+         staff arriving with the spreadsheet import — so the leaving date is
+         validated on the way in rather than assumed absent. */
+      const status = request.status ?? 'ACTIVE';
+      const leftOn = leavingDateFor({
+        status,
+        leftOn: request.leftOn,
+        hireDate: request.hireDate,
+      });
+
       const pay = request.startingPay;
       const effectiveFrom = pay?.effectiveFrom ?? request.hireDate;
 
@@ -373,7 +366,8 @@ export function createEmployeeService(deps: EmployeeServiceDeps): EmployeeServic
           jobTitle: request.jobTitle ?? null,
           hireDate: request.hireDate,
           managerId,
-          status: request.status ?? 'ACTIVE',
+          status,
+          leftOn: status === 'LEFT' ? leftOn : null,
         },
         pay === undefined
           ? null
@@ -406,7 +400,123 @@ export function createEmployeeService(deps: EmployeeServiceDeps): EmployeeServic
       }
       return detail;
     },
+
+    async changeStatus(
+      subject: ScopeSubject,
+      request: ChangeStatusRequest,
+    ): Promise<EmployeeDetail | null> {
+      const today = toIsoDate(deps.now());
+      const scope = accessScopeFor(subject);
+
+      /* The scope decides first, as it does for every write. The route guard says
+         which roles may change a status; the scope says whose records exist as far
+         as this caller is concerned, and for somebody they cannot see the answer
+         has to be the same 404 a reader gets. */
+      const employee = await findEmployeeById(deps.db, {
+        id: request.employeeId,
+        scope,
+        asOf: today,
+      });
+      if (employee === null) {
+        return null;
+      }
+
+      const leftOn = leavingDateFor({
+        status: request.status,
+        leftOn: request.leftOn,
+        hireDate: employee.hireDate,
+      });
+
+      if (request.status === 'LEFT') {
+        /* Refused while anybody still reports to them. A departed manager leaves
+           their team pointing at somebody who is no longer here, which quietly
+           breaks the Manager access scope for everybody underneath — they would
+           be scoped to a person who cannot sign in. Naming the count makes the
+           next step obvious: reassign them first. */
+        const reports = await countActiveDirectReports(deps.db, request.employeeId);
+
+        if (reports > 0) {
+          throw new AppError(
+            HTTP_STATUS.BAD_REQUEST,
+            'INVALID_REQUEST',
+            `${String(reports)} ${reports === 1 ? 'person still reports' : 'people still report'} to ${employee.fullName}. Move them to another manager first.`,
+          );
+        }
+      }
+
+      /* Not refused when the status is already what was asked for. Setting a
+         leaver's date to a corrected day goes through this same call, and
+         rejecting "no change" would also make the button fail for anybody who
+         clicked it twice. The write is idempotent, so there is nothing to
+         protect against. */
+      const changed = await updateEmployeeStatus(deps.db, {
+        id: request.employeeId,
+        status: request.status,
+        leftOn,
+      });
+
+      if (!changed) {
+        /* The row existed a moment ago and the scope allowed it. Deleted in
+           between is the only way here, and employees are not deleted. */
+        return null;
+      }
+
+      logger.info('employee.statusChanged', {
+        employeeId: request.employeeId,
+        status: request.status,
+        changedByUserId: request.changedByUserId,
+        /* No name and no leaving date. Who left and when is personnel
+           information, and a log is the easiest place in a system to read
+           without being noticed. */
+      });
+
+      return findDetail(subject, request.employeeId, today);
+    },
   };
+}
+
+/**
+ * The leaving date a status implies, or a 400 explaining what is wrong with it.
+ *
+ * The database enforces "both or neither" as a constraint, which would surface as
+ * a 500 written for whoever is on call. This turns the same three mistakes into
+ * messages that name the field, and is the only place the pairing rule is
+ * expressed in application code — the create path and the status change both come
+ * through here.
+ */
+function leavingDateFor(request: {
+  status: 'ACTIVE' | 'LEFT';
+  leftOn: string | undefined;
+  hireDate: string;
+}): string | null {
+  if (request.status === 'ACTIVE') {
+    if (request.leftOn !== undefined) {
+      throw new AppError(
+        HTTP_STATUS.BAD_REQUEST,
+        'INVALID_REQUEST',
+        'Somebody who is still employed has no leaving date.',
+      );
+    }
+    return null;
+  }
+
+  if (request.leftOn === undefined) {
+    throw new AppError(
+      HTTP_STATUS.BAD_REQUEST,
+      'INVALID_REQUEST',
+      'A leaving date is required. Without one, every historic payroll figure would count this person as never having been here.',
+    );
+  }
+
+  if (request.leftOn < request.hireDate) {
+    throw new AppError(
+      HTTP_STATUS.BAD_REQUEST,
+      'INVALID_REQUEST',
+      `A leaving date cannot come before the hire date of ${request.hireDate}.`,
+    );
+  }
+
+  return request.leftOn;
 }
 
 /** A dropdown option that no longer exists, or an id somebody typed by hand. */

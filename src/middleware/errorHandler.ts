@@ -1,7 +1,7 @@
 import type { NextFunction, Request, Response } from 'express';
 import { ZodError } from 'zod';
-import { AppError, HTTP_STATUS, notFound, type ErrorCode } from '../errors';
-import { logger } from '../logger';
+import { AppError, HTTP_STATUS, notFound, type ErrorCode } from '../shared/errors';
+import { logger } from '../shared/logger';
 
 /**
  * The single place a failure becomes a response.

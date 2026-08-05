@@ -3,8 +3,8 @@ import type { Database } from '../db/database';
 import { hashPassword, verifyPassword } from '../domain/password';
 import type { Role } from '../domain/roles';
 import { hashRefreshToken, issueRefreshToken, signAccessToken } from '../domain/tokens';
-import { invalidCredentials, unauthenticated } from '../errors';
-import { logger, maskEmail } from '../logger';
+import { invalidCredentials, unauthenticated } from '../shared/errors';
+import { logger, maskEmail } from '../shared/logger';
 import {
   createRefreshToken,
   findRefreshTokenByHash,

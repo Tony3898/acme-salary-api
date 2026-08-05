@@ -1,6 +1,6 @@
 import rateLimit from 'express-rate-limit';
 import type { RequestHandler } from 'express';
-import { rateLimited } from '../errors';
+import { rateLimited } from '../shared/errors';
 
 const MILLISECONDS_PER_MINUTE = 60_000;
 

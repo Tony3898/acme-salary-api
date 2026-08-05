@@ -1,6 +1,6 @@
 import type { NextFunction, Request, RequestHandler, Response } from 'express';
 import { verifyAccessToken, type AccessTokenClaims } from '../domain/tokens';
-import { unauthenticated } from '../errors';
+import { unauthenticated } from '../shared/errors';
 
 /**
  * Who is making this request.

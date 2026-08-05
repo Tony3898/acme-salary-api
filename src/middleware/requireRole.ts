@@ -1,6 +1,6 @@
 import type { NextFunction, Request, RequestHandler, Response } from 'express';
 import type { Role } from '../domain/roles';
-import { forbidden } from '../errors';
+import { forbidden } from '../shared/errors';
 import { authContext } from './requireAuth';
 
 /**

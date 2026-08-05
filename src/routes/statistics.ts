@@ -1,9 +1,9 @@
 import { Router, type RequestHandler } from 'express';
 import { z } from 'zod';
-import { isValidIsoDate } from '../domain/dates';
-import { HTTP_STATUS } from '../errors';
+import { HTTP_STATUS } from '../shared/errors';
 import { authContext } from '../middleware/requireAuth';
 import type { StatisticsService } from '../services/statistics';
+import { employeeFilterSchema, isoDateSchema } from './schemas';
 
 /**
  * The dashboard's figures.
@@ -14,18 +14,14 @@ import type { StatisticsService } from '../services/statistics';
  * that summarises pay will find it.
  */
 
-const COUNTRY_PATTERN = /^[A-Za-z]{2}$/;
-
-const overviewQuerySchema = z.object({
-  asOf: z.string().refine(isValidIsoDate, 'asOf must be a date as YYYY-MM-DD.').optional(),
+const overviewQuerySchema = employeeFilterSchema.extend({
+  asOf: isoDateSchema('asOf').optional(),
   status: z.enum(['ACTIVE', 'LEFT', 'ALL']).optional(),
-  country: z
-    .string()
-    .regex(COUNTRY_PATTERN, 'country must be a two-letter code.')
-    .transform((value) => value.toUpperCase())
-    .optional(),
-  departmentId: z.coerce.number().int().positive().optional(),
-  jobLevelId: z.coerce.number().int().positive().optional(),
+});
+
+/** The same filters, and no status: a pay gap is about the people here now. */
+const payGapQuerySchema = employeeFilterSchema.extend({
+  asOf: isoDateSchema('asOf').optional(),
 });
 
 /**
@@ -34,7 +30,7 @@ const overviewQuerySchema = z.object({
  * the API, and the sensible answer is as much as we will draw.
  */
 const trendQuerySchema = z.object({
-  asOf: z.string().refine(isValidIsoDate, 'asOf must be a date as YYYY-MM-DD.').optional(),
+  asOf: isoDateSchema('asOf').optional(),
   historyMonths: z.coerce.number().int().positive().optional(),
   /* Zero is allowed and means "no forecast": a legitimate thing to ask for when
      somebody wants the history on its own. */
@@ -70,6 +66,16 @@ export function createStatisticsRouter(deps: StatisticsRouterDeps): Router {
 
     res.setHeader('Cache-Control', 'no-store');
     res.status(HTTP_STATUS.OK).json(trend);
+  });
+
+  router.get('/pay-gap', deps.requireAuth, async (req, res) => {
+    const query = payGapQuerySchema.parse(req.query);
+    const { role, employeeId } = authContext(req);
+
+    const gap = await deps.statistics.payGap({ role, employeeId }, query);
+
+    res.setHeader('Cache-Control', 'no-store');
+    res.status(HTTP_STATUS.OK).json(gap);
   });
 
   return router;

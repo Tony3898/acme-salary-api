@@ -230,6 +230,27 @@ describe('POST /api/employees/:id/compensation', () => {
       expect(errorOf(second).message).toMatch(/already exists/i);
     });
 
+    it('given the same raise posted twice at once, when both are in flight, then only one is written', async () => {
+      /* The case a read-then-write cannot survive, and the reason the rule lives on
+         the table rather than in front of it. Both requests reach the duplicate
+         question before either has answered it, so both are told "no duplicate" —
+         and in an append-only table the second write is a raise paid twice with no
+         way to take it back.
+
+         Sent without awaiting the first, which is what a double-clicked button
+         actually does. */
+      const [first, second] = await Promise.all([
+        recordAs('hr.admin@acme.test', validRaise),
+        recordAs('hr.admin@acme.test', validRaise),
+      ]);
+
+      const statuses = [first.status, second.status].sort((a, b) => a - b);
+      expect(statuses).toEqual([200, 400]);
+
+      const winner = first.status === 200 ? first : second;
+      expect(detailOf(winner).history).toHaveLength(1);
+    });
+
     it('given a different amount on the same day, when posted, then the correction wins', async () => {
       /* A correction issued the same day is legitimate, so it is not a
          duplicate. Dated in the past so which one is *current* is observable —

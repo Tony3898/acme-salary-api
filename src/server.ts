@@ -1,7 +1,7 @@
 import { createApp } from './app';
 import { config } from './config';
 import { createContainer } from './container';
-import { logger } from './logger';
+import { logger } from './shared/logger';
 
 /**
  * The process entry point, and the only place a container is created.
@@ -18,6 +18,7 @@ const container = createContainer({
   jwtSecret: config.JWT_SECRET,
   accessTokenTtlMinutes: config.ACCESS_TOKEN_TTL_MINUTES,
   refreshTokenTtlDays: config.REFRESH_TOKEN_TTL_DAYS,
+  syntheticData: config.SYNTHETIC_DATA,
 });
 
 const app = createApp({

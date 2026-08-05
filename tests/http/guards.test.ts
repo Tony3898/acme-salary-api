@@ -1,7 +1,7 @@
 import express, { type Express } from 'express';
 import jwt from 'jsonwebtoken';
 import request from 'supertest';
-import { HTTP_STATUS } from '../../src/errors';
+import { HTTP_STATUS } from '../../src/shared/errors';
 import { accessTokenFrom, bodyOf, errorOf } from '../helpers/http';
 import { errorHandler, notFoundHandler } from '../../src/middleware/errorHandler';
 import { authContext, requireAuth } from '../../src/middleware/requireAuth';

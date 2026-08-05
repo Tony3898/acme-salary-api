@@ -69,10 +69,7 @@ describe('POST /api/employees', () => {
   });
 
   const createAs = (email: string, body: object) =>
-    request(harness.app)
-      .post('/api/employees')
-      .set('Authorization', authorised(email))
-      .send(body);
+    request(harness.app).post('/api/employees').set('Authorization', authorised(email)).send(body);
 
   const validJoiner = () => ({
     fullName: 'Nadia Rahman',
@@ -251,7 +248,10 @@ describe('POST /api/employees', () => {
       ['a country that is not a code', { country: 'GBR' }],
       ['a hire date that is not a date', { hireDate: '2026-02-31' }],
       ['a department that is not a number', { departmentId: 'sales' }],
-      ['an amount with three decimal places', { startingPay: { amount: '1.234', currency: 'USD' } }],
+      [
+        'an amount with three decimal places',
+        { startingPay: { amount: '1.234', currency: 'USD' } },
+      ],
       ['an amount with a separator', { startingPay: { amount: '70,000', currency: 'USD' } }],
       ['a currency we do not support', { startingPay: { amount: '70000', currency: 'JPY' } }],
     ])('given %s, when posted, then it is a 400 rather than a 500', async (_name, invalid) => {

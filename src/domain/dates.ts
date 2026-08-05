@@ -29,3 +29,21 @@ export function isValidIsoDate(value: string): boolean {
   const parsed = new Date(`${value}T00:00:00.000Z`);
   return !Number.isNaN(parsed.getTime()) && toIsoDate(parsed) === value;
 }
+
+/**
+ * The calendar day before this one.
+ *
+ * Needed by anything that means "what was in force *up to* this date" as opposed to
+ * "on it". A bulk raise starting on 1 December is a percentage of the salary in
+ * force on 30 November — reading the salary on the 1st would let a record the same
+ * operation had just written become its own starting point, so running it twice
+ * would compound.
+ *
+ * Arithmetic in UTC on a plain date, so no month end or leap day needs special
+ * handling and no time zone can shift the answer.
+ */
+export function previousDay(date: string): string {
+  const parsed = new Date(`${date}T00:00:00.000Z`);
+  parsed.setUTCDate(parsed.getUTCDate() - 1);
+  return toIsoDate(parsed);
+}

@@ -1,7 +1,8 @@
 import type { Database } from '../db/database';
 import { accessScopeFor, canSeeAggregates, type ScopeSubject } from '../domain/accessScope';
 import { toIsoDate } from '../domain/dates';
-import { forbidden } from '../errors';
+import { MIN_GROUP_FOR_MEDIAN } from '../domain/disclosure';
+import { forbidden } from '../shared/errors';
 import {
   computePayrollTrend,
   DEFAULT_HISTORY_MONTHS,
@@ -10,11 +11,8 @@ import {
   MAX_HORIZON_MONTHS,
   type PayrollTrendPoint,
 } from '../repositories/payrollTrend';
-import {
-  computeStatistics,
-  MIN_GROUP_FOR_MEDIAN,
-  type StatisticsResult,
-} from '../repositories/statistics';
+import { computePayGap, type PayGapResult } from '../repositories/payGap';
+import { computeStatistics, type StatisticsResult } from '../repositories/statistics';
 
 /**
  * The figures behind the dashboard.
@@ -41,6 +39,8 @@ export interface StatisticsOverview extends StatisticsResult {
 export interface StatisticsServiceDeps {
   db: Database;
   now: () => Date;
+  /** Passed in from config, so the caveat on the pay-gap screen has one source. */
+  syntheticData: boolean;
 }
 
 export interface PayrollTrendRequest {
@@ -59,6 +59,25 @@ export interface PayrollTrendResult {
   committedChangeUsdMinor: number;
 }
 
+export interface PayGapRequest {
+  asOf?: string;
+  country?: string;
+  departmentId?: number;
+  jobLevelId?: number;
+}
+
+export interface PayGapOverview extends PayGapResult {
+  asOf: string;
+  /**
+   * That the gap in this data was put there deliberately.
+   *
+   * Sent by the API rather than written into the UI, because a screen that says
+   * "synthetic data" in hard-coded text keeps saying it after the data becomes
+   * real. This flag is the one thing that would have to change.
+   */
+  syntheticData: boolean;
+}
+
 export interface StatisticsService {
   overview: (subject: ScopeSubject, request: StatisticsRequest) => Promise<StatisticsOverview>;
   /** Payroll month by month, and what is already committed beyond today. */
@@ -66,6 +85,8 @@ export interface StatisticsService {
     subject: ScopeSubject,
     request: PayrollTrendRequest,
   ) => Promise<PayrollTrendResult>;
+  /** Median pay by gender, within one country and one level at a time. */
+  payGap: (subject: ScopeSubject, request: PayGapRequest) => Promise<PayGapOverview>;
 }
 
 export function createStatisticsService(deps: StatisticsServiceDeps): StatisticsService {
@@ -141,6 +162,32 @@ export function createStatisticsService(deps: StatisticsServiceDeps): Statistics
       const months = await computePayrollTrend(deps.db, { asOf, historyMonths, horizonMonths });
 
       return { asOf, months, committedChangeUsdMinor: committedChange(months) };
+    },
+
+    async payGap(subject: ScopeSubject, request: PayGapRequest): Promise<PayGapOverview> {
+      /**
+       * The strictest of the three gates, and for the clearest reason.
+       *
+       * Narrowing this to a Manager's team would not produce a smaller analysis;
+       * it would produce cells of two and three people, every one of them under
+       * the disclosure threshold, and the handful that survived would be a
+       * comparison between two named colleagues. HR-only is the only version of
+       * this feature that is not a way to read individual salaries.
+       */
+      if (!canSeeAggregates(accessScopeFor(subject))) {
+        throw forbidden('Pay-gap analysis is available to HR roles only.');
+      }
+
+      const asOf = request.asOf ?? toIsoDate(deps.now());
+
+      const gap = await computePayGap(deps.db, {
+        asOf,
+        ...(request.country === undefined ? {} : { country: request.country }),
+        ...(request.departmentId === undefined ? {} : { departmentId: request.departmentId }),
+        ...(request.jobLevelId === undefined ? {} : { jobLevelId: request.jobLevelId }),
+      });
+
+      return { ...gap, asOf, syntheticData: deps.syntheticData };
     },
   };
 }

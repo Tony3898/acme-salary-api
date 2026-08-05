@@ -1,4 +1,4 @@
-import { createCachedValue } from '../src/cache';
+import { createCachedValue } from '../src/shared/cache';
 
 const TTL_MS = 60_000;
 

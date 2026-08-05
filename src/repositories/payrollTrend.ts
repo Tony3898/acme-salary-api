@@ -18,6 +18,13 @@ import { rawRows, type Database } from '../db/database';
  * is given the window it applies to, with `lead()` over the person's own
  * records, and a month matches the one window that contains it. That is a single
  * scan of the salary history whatever the range asked for.
+ *
+ * **Who counts in a month.** Somebody hired in June and gone in September is on
+ * the payroll for exactly those months, which is why `employees.left_on` exists:
+ * with only a status flag the choice was between counting every leaver in every
+ * month they were never there, or in none of the months they were. Both make a
+ * historic total wrong, and the second makes it wrong in the direction that looks
+ * like the company is getting cheaper.
  */
 
 /** A year of history reads as a trend; three months reads as noise. */
@@ -101,12 +108,12 @@ export function buildPayrollTrendQuery(query: PayrollTrendQuery): SQL {
      AND (w.next_from IS NULL OR w.next_from > m.month)
     LEFT JOIN employees e
       ON e.id = w.employee_id
+     /* Employed in that month: hired by then, and not yet gone. The leaving date
+        is what makes the historic half of this chart true — before the column
+        existed the only options were to count leavers in every month or in none,
+        and both answers are wrong for a question about what payroll cost. */
      AND e.hire_date <= m.month
-     /* People currently on the books. The record says somebody has left but not
-        when, so a leaver cannot be put back into the months they worked — and
-        counting them in every month would be worse than counting them in none.
-        The UI says which of the two this is. */
-     AND e.status = 'ACTIVE'
+     AND (e.left_on IS NULL OR e.left_on >= m.month)
     LEFT JOIN fx_rates fx ON fx.currency = w.currency
     WHERE w.employee_id IS NULL OR e.id IS NOT NULL
     GROUP BY m.month

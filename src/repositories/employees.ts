@@ -1,4 +1,4 @@
-import { and, eq, sql, type SQL } from 'drizzle-orm';
+import { eq, sql, type SQL } from 'drizzle-orm';
 import { rawRows, type Database } from '../db/database';
 import { compensationRecords, employees } from '../db/schema';
 import type { AccessScope } from '../domain/accessScope';
@@ -11,6 +11,16 @@ import {
   whereFrom,
 } from './employeeFilters';
 import type { Currency } from '../domain/money';
+import { bandFitCondition, type BandFitFilter } from './payBands';
+import {
+  EMPLOYEE_COLUMNS,
+  employeeFrom,
+  toEmployeeListRow,
+  type EmployeeListRow,
+  type RawEmployeeColumns,
+} from './employeeRow';
+
+export type { EmployeeListRow } from './employeeRow';
 
 /**
  * Reading employees, with their pay as it stood on a given date.
@@ -53,30 +63,6 @@ const SORT_EXPRESSIONS: Record<EmployeeSortField, SQL> = {
   status: sql`e.status`,
 };
 
-export interface EmployeeListRow {
-  id: number;
-  fullName: string;
-  email: string;
-  country: string;
-  departmentId: number;
-  departmentName: string;
-  jobLevelId: number;
-  jobLevelName: string;
-  jobTitle: string | null;
-  hireDate: string;
-  managerId: number | null;
-  managerName: string | null;
-  status: 'ACTIVE' | 'LEFT';
-  /** Null for somebody with no compensation record on or before the date asked for. */
-  salary: {
-    amountMinor: number;
-    currency: Currency;
-    /** The same amount in USD cents, for comparing across countries. */
-    amountUsdMinor: number;
-    effectiveFrom: string;
-  } | null;
-}
-
 export interface EmployeeListQuery {
   scope: AccessScope;
   /** Salaries as they stood on this date, as YYYY-MM-DD. */
@@ -90,6 +76,14 @@ export interface EmployeeListQuery {
   departmentId?: number;
   jobLevelId?: number;
   status?: 'ACTIVE' | 'LEFT';
+  /**
+   * Keep only people whose pay sits this way against their band.
+   *
+   * The same six outcomes the chip on their row shows, and the same SQL the
+   * needs-attention list uses for BELOW — so "22 below" on the pay-bands screen and
+   * the page it links to are the same 22 people by construction.
+   */
+  bandFit?: BandFitFilter;
 }
 
 export interface EmployeeListResult {
@@ -97,87 +91,9 @@ export interface EmployeeListResult {
   total: number;
 }
 
-/**
- * The columns `EMPLOYEE_COLUMNS` selects, for both the list and one record.
- *
- * The window-function total is *not* here. It belongs to a page of results, and
- * having it on the shared type meant the single-record query selected a
- * hard-coded `1 AS total_count` to satisfy a field nothing reads — a lie in the
- * SQL to keep a type happy.
- */
-interface RawEmployeeColumns {
-  id: number;
-  full_name: string;
-  email: string;
-  country: string;
-  department_id: number;
-  department_name: string;
-  job_level_id: number;
-  job_level_name: string;
-  job_title: string | null;
-  hire_date: string;
-  manager_id: number | null;
-  manager_name: string | null;
-  status: 'ACTIVE' | 'LEFT';
-  amount_minor: number | null;
-  currency: Currency | null;
-  effective_from: string | null;
-  salary_usd_minor: number | null;
-}
-
 /** A row from the list, which also carries how many the filters matched. */
 interface RawEmployeeListRow extends RawEmployeeColumns {
   total_count: number;
-}
-
-/**
- * What an employee row is, in one place.
- *
- * The list and a single record answer the same question about different numbers
- * of people, so they share the columns and the joins. Written twice they drift:
- * a column added to the list would be missing from the detail page, or the two
- * would convert currency differently and disagree by a cent.
- */
-const EMPLOYEE_COLUMNS = sql`
-  e.id,
-  e.full_name,
-  e.email,
-  e.country,
-  e.department_id,
-  d.name AS department_name,
-  e.job_level_id,
-  jl.name AS job_level_name,
-  e.job_title,
-  e.hire_date,
-  e.manager_id,
-  m.full_name AS manager_name,
-  e.status,
-  current_pay.amount_minor,
-  current_pay.currency,
-  current_pay.effective_from,
-  round(current_pay.amount_minor * fx.rate_to_usd)::bigint AS salary_usd_minor
-`;
-
-function employeeFrom(asOf: string): SQL {
-  return sql`
-    FROM employees e
-    JOIN departments d ON d.id = e.department_id
-    JOIN job_levels jl ON jl.id = e.job_level_id
-    LEFT JOIN employees m ON m.id = e.manager_id
-    /* The salary in force on the date asked for: the latest record that had
-       already started, with id breaking a same-day tie. LEFT so somebody with
-       no record yet appears with no pay rather than vanishing from the list. */
-    LEFT JOIN LATERAL (
-      SELECT c.amount_minor, c.currency, c.effective_from
-      FROM compensation_records c
-      WHERE c.employee_id = e.id AND c.effective_from <= ${asOf}
-      ORDER BY c.effective_from DESC, c.id DESC
-      LIMIT 1
-    ) current_pay ON true
-    /* Also LEFT: a missing rate must surface as an error, not quietly drop
-       those people from a list that reports a total. */
-    LEFT JOIN fx_rates fx ON fx.currency = current_pay.currency
-  `;
 }
 
 /**
@@ -193,6 +109,7 @@ function listConditions(query: EmployeeListQuery): SQL[] {
     ...searchCondition(query.search),
     ...employeeFilterConditions(query),
     ...statusCondition(query.status ?? 'ALL'),
+    ...(query.bandFit === undefined ? [] : [bandFitCondition(query.bandFit)]),
   ];
 }
 
@@ -257,14 +174,27 @@ export function buildEmployeeListQuery(query: EmployeeListQuery): SQL {
   `;
 }
 
-/** The count, built but not run. Reuses the same filters and the same team walk. */
+/**
+ * The count, built but not run. Reuses the same filters and the same team walk.
+ *
+ * **The same FROM as the list, not a bare `FROM employees e`.** It was the bare
+ * version for a while, on the reasoning that counting needs no joins — which held
+ * only because every filter condition happened to touch `e` alone. The band filters
+ * are written against `current_pay` and `b`, so the bare version compiled fine and
+ * failed at run time on any band filter that matched nothing: exactly the empty page
+ * this query exists to serve.
+ *
+ * Sharing the FROM makes "what can be filtered on" the same question for both
+ * statements, which is the invariant that should never have been implicit. It only
+ * runs on an empty page, so the extra joins cost nothing worth measuring.
+ */
 export function buildEmployeeCountQuery(query: EmployeeListQuery): SQL {
   const where = whereFrom(listConditions(query));
 
   return sql`
     ${teamCte(query.scope)}
     SELECT count(*)::int AS total
-    FROM employees e
+    ${employeeFrom(query.asOf)}
     WHERE ${where}
   `;
 }
@@ -398,6 +328,11 @@ export interface NewCompensationRecord {
 /**
  * Records a new salary. Nothing is ever updated: a raise is a row, and the
  * history is the table.
+ *
+ * There is no "does this already exist?" query before it. A duplicate is refused by
+ * the unique index on the whole tuple, and the caller recognises that violation —
+ * see COMPENSATION_UNIQUE_RECORD in schema.ts for why the check has to be the write
+ * rather than something that precedes it.
  */
 export async function insertCompensationRecord(
   db: Database,
@@ -414,35 +349,6 @@ export async function insertCompensationRecord(
   return inserted.id;
 }
 
-/**
- * Whether the very same record already exists.
- *
- * A double-clicked button or a retried request would otherwise write the raise
- * twice, and an append-only table has no undo. Identical amount, currency and
- * start date on one person is a duplicate submission rather than a decision
- * anybody made twice — a correction to the same figure on the same day changes
- * nothing, so refusing it costs nothing either.
- */
-export async function hasIdenticalCompensationRecord(
-  db: Database,
-  record: Pick<NewCompensationRecord, 'employeeId' | 'amountMinor' | 'currency' | 'effectiveFrom'>,
-): Promise<boolean> {
-  const [found] = await db
-    .select({ id: compensationRecords.id })
-    .from(compensationRecords)
-    .where(
-      and(
-        eq(compensationRecords.employeeId, record.employeeId),
-        eq(compensationRecords.amountMinor, record.amountMinor),
-        eq(compensationRecords.currency, record.currency),
-        eq(compensationRecords.effectiveFrom, record.effectiveFrom),
-      ),
-    )
-    .limit(1);
-
-  return found !== undefined;
-}
-
 /** Everything the employees table needs, with nothing optional left implicit. */
 export interface NewEmployee {
   fullName: string;
@@ -455,6 +361,8 @@ export interface NewEmployee {
   hireDate: string;
   managerId: number | null;
   status: 'ACTIVE' | 'LEFT';
+  /** Required when the status is LEFT, and forbidden otherwise — the schema checks both. */
+  leftOn: string | null;
 }
 
 /** The salary somebody starts on, if it is known when the record is created. */
@@ -542,6 +450,50 @@ export async function insertEmployee(
 }
 
 /**
+ * Whether somebody is currently employed, and when they left if not.
+ *
+ * `status` and `leftOn` are written together in one statement because the schema
+ * refuses them apart: a leaver with no date, or an active employee carrying one,
+ * cannot exist even briefly. Two updates would have to pass through exactly that
+ * state.
+ *
+ * Returns whether a row was actually changed, so a caller can tell "no such
+ * person" from "done" without reading the row back first.
+ */
+export async function updateEmployeeStatus(
+  db: Database,
+  change: { id: number; status: 'ACTIVE' | 'LEFT'; leftOn: string | null },
+): Promise<boolean> {
+  const updated = await db
+    .update(employees)
+    .set({ status: change.status, leftOn: change.leftOn })
+    .where(eq(employees.id, change.id))
+    .returning({ id: employees.id });
+
+  return updated.length > 0;
+}
+
+/**
+ * How many people still report to somebody, directly and are still employed.
+ *
+ * "Still employed" matters for one caller: marking a manager as having left is
+ * refused while anybody reports to them, and counting their previous reports who
+ * have themselves already left would block a departure for no reason.
+ */
+export async function countActiveDirectReports(db: Database, employeeId: number): Promise<number> {
+  const [counted] = await rawRows<{ total: number }>(
+    db,
+    sql`
+      SELECT count(*)::int AS total
+      FROM employees
+      WHERE manager_id = ${employeeId} AND status = 'ACTIVE'
+    `,
+  );
+
+  return counted?.total ?? 0;
+}
+
+/**
  * How many people report to somebody, directly.
  *
  * Not filtered by scope: a Manager may see their own report count, and the only
@@ -554,43 +506,4 @@ export async function countDirectReports(db: Database, employeeId: number): Prom
   );
 
   return counted?.total ?? 0;
-}
-
-function toEmployeeListRow(row: RawEmployeeColumns): EmployeeListRow {
-  return {
-    id: row.id,
-    fullName: row.full_name,
-    email: row.email,
-    country: row.country,
-    departmentId: row.department_id,
-    departmentName: row.department_name,
-    jobLevelId: row.job_level_id,
-    jobLevelName: row.job_level_name,
-    jobTitle: row.job_title,
-    hireDate: row.hire_date,
-    managerId: row.manager_id,
-    managerName: row.manager_name,
-    status: row.status,
-    salary: toSalary(row),
-  };
-}
-
-function toSalary(row: RawEmployeeColumns): EmployeeListRow['salary'] {
-  if (row.amount_minor === null || row.currency === null || row.effective_from === null) {
-    return null;
-  }
-
-  if (row.salary_usd_minor === null) {
-    /* The rate is missing from fx_rates. Refusing is the point: converting is how
-       every cost figure is produced, and silently omitting these people would make
-       a payroll total quietly too small. */
-    throw new Error(`No exchange rate for ${row.currency}; cannot convert employee ${row.id}.`);
-  }
-
-  return {
-    amountMinor: row.amount_minor,
-    currency: row.currency,
-    amountUsdMinor: row.salary_usd_minor,
-    effectiveFrom: row.effective_from,
-  };
 }

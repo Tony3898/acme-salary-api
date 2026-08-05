@@ -1,5 +1,6 @@
 import { sql, type SQL } from 'drizzle-orm';
 import { rawRows, type Database } from '../db/database';
+import { MIN_GROUP_FOR_MEDIAN } from '../domain/disclosure';
 import {
   employeeFilterConditions,
   statusCondition,
@@ -27,13 +28,6 @@ import {
  * noise, and five hides the shape.
  */
 const DISTRIBUTION_BUCKETS = 10;
-
-/**
- * Below this, a group's median is that group's salaries with one step of
- * arithmetic in front. The headcount and the total are still reported — those
- * are genuinely aggregate — but the middle of four people is not a statistic.
- */
-export const MIN_GROUP_FOR_MEDIAN = 5;
 
 export interface StatisticsQuery {
   /** Pay as it stood on this day. */
@@ -270,8 +264,13 @@ export function buildStatisticsQuery(query: StatisticsQuery): SQL {
            zero rather than a missing bar — the gap is the interesting part. */
         SELECT
           s.bucket,
-          (b.lo + (b.hi - b.lo) * (s.bucket - 1) / ${buckets})::bigint AS from_usd_minor,
-          (b.lo + (b.hi - b.lo) * s.bucket / ${buckets})::bigint AS to_usd_minor,
+          /* Divided as numeric, not as bigint. Integer division truncates, so with ten
+             buckets a boundary label could sit up to nine cents below the boundary
+             width_bucket actually used — and a salary exactly on the line would appear
+             in a bucket whose printed range excludes it. Nine cents is invisible on a
+             chart and indefensible in an explanation. */
+          round(b.lo + (b.hi - b.lo)::numeric * (s.bucket - 1) / ${buckets})::bigint AS from_usd_minor,
+          round(b.lo + (b.hi - b.lo)::numeric * s.bucket / ${buckets})::bigint AS to_usd_minor,
           count(k.bucket)::int AS employees
         FROM generate_series(1, ${buckets}) AS s(bucket)
         CROSS JOIN bounds b
@@ -279,13 +278,18 @@ export function buildStatisticsQuery(query: StatisticsQuery): SQL {
         WHERE b.lo IS NOT NULL
         GROUP BY s.bucket, b.lo, b.hi
       )
+      /* Every ORDER BY below ends in the label. Two departments with the same payroll
+         cost — which is likelier than it sounds once figures are rounded to the dollar
+         — would otherwise come back in whatever order the plan happened to produce,
+         and the bars on the dashboard would swap places between two identical
+         refreshes. Nothing looks broken, which is what makes it worth a tie-break. */
       SELECT
         (SELECT row_to_json(o) FROM overall o) AS overall,
-        (SELECT coalesce(json_agg(t ORDER BY t.total_usd_minor DESC), '[]'::json)
+        (SELECT coalesce(json_agg(t ORDER BY t.total_usd_minor DESC, t.label ASC), '[]'::json)
            FROM by_department t) AS by_department,
-        (SELECT coalesce(json_agg(t ORDER BY t.total_usd_minor DESC), '[]'::json)
+        (SELECT coalesce(json_agg(t ORDER BY t.total_usd_minor DESC, t.label ASC), '[]'::json)
            FROM by_country t) AS by_country,
-        (SELECT coalesce(json_agg(t ORDER BY t.level_rank ASC), '[]'::json)
+        (SELECT coalesce(json_agg(t ORDER BY t.level_rank ASC, t.label ASC), '[]'::json)
            FROM by_job_level t) AS by_job_level,
         (SELECT coalesce(json_agg(t ORDER BY t.bucket ASC), '[]'::json)
            FROM distribution t) AS distribution
