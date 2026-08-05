@@ -120,15 +120,19 @@ jobs:
           TOKEN=$(curl -sS -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
             "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=sts.amazonaws.com" | jq -r .value)
 
-          # The payload is the middle segment, base64url. Decoded and read, not logged whole.
-          CLAIMS=$(echo "$TOKEN" | cut -d. -f2 | tr '_-' '/+' | base64 -d 2>/dev/null || \
-                   echo "$TOKEN" | cut -d. -f2 | tr '_-' '/+' | base64 -d --ignore-garbage)
+          # Decoded in Python because a JWT payload is base64*url* with the padding
+          # stripped, and `base64 -d` rejects it as invalid input rather than padding it
+          # back. Prints three claims and never the token.
+          python3 - "$TOKEN" <<'PY'
+          import base64, json, sys
 
-          echo "sub = $(echo "$CLAIMS" | jq -r .sub)"
-          echo "aud = $(echo "$CLAIMS" | jq -r .aud)"
-          echo "iss = $(echo "$CLAIMS" | jq -r .iss)"
-          echo
-          echo "The trust policy must contain that exact sub, and that exact aud."
+          payload = sys.argv[1].split('.')[1]
+          claims = json.loads(base64.urlsafe_b64decode(payload + '=' * (-len(payload) % 4)))
+
+          for claim in ('sub', 'aud', 'iss'):
+              print(f'{claim} = {claims.get(claim)}')
+          print('\nThe trust policy must contain that exact sub, and that exact aud.')
+          PY
 
       - uses: aws-actions/configure-aws-credentials@v4
         with:
