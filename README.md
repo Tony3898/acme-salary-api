@@ -5,6 +5,22 @@ several countries, plus the statistics an HR Manager currently rebuilds by hand 
 
 React UI lives in a separate repo: **[acme-salary-web](https://github.com/Tony3898/acme-salary-web)**
 
+## Live
+
+|                  |                                                                                  |
+| ---------------- | -------------------------------------------------------------------------------- |
+| Application      | **https://acme.tejasrana.in**                                                    |
+| API              | https://acme.tejasrana.in/api — same origin, routed to this server by CloudFront |
+| Health           | https://acme.tejasrana.in/health                                                 |
+| How it was built | https://acme.tejasrana.in/case-study — the decisions below, in one page          |
+
+Sign in with any of the [demo accounts](#demo-accounts). The server stops at 22:00 IST and starts
+again at 09:30 IST on weekdays, and the compute stack deletes itself after fourteen days — the
+`infra` workflow rebuilds it in about four minutes. See [docs/deployment.md](docs/deployment.md).
+
+The instance answers only CloudFront: its security group admits the CloudFront origin-facing prefix
+list on 443 and nothing else, so a request straight to the origin hostname times out.
+
 ## Documents
 
 Read these first — they explain what is built and why.
