@@ -113,10 +113,123 @@ the seed script. One migration is generated at first deploy, and real migrations
 once there is data that cannot be regenerated. Note that adding _records_ is not a migration: CSV import,
 seeding and bulk raises change no schema.
 
-**Injection:** safety comes from parameterisation, not from the ORM. Two places need care and have tests
-— the user-chosen sort column, which is a fixed map from `sortBy=salary` to a real typed column with
-anything else rejected (identifiers cannot be parameterised, so an ORM does not solve this either), and
-any raw `sql` block, where values are passed as parameters and never concatenated.
+## SQL injection: parameterised, and proved rather than asserted
+
+Choosing to write raw SQL means the safety argument has to be made explicitly, so here it is in full.
+
+**Every value from a request is a bound parameter.** Drizzle's `sql` template puts each `${}`
+interpolation into the parameter list and emits a `$1` placeholder in its place. A value in the parameter
+list is never parsed as SQL, whatever it contains — `'; DROP TABLE employees; --` is just a name nobody
+has.
+
+**Three places in the whole codebase paste a literal into the statement**, and none of them can be
+influenced from outside:
+
+| Site                                         | What it inlines | Why it cannot be a parameter                                                        |
+| -------------------------------------------- | --------------- | ----------------------------------------------------------------------------------- |
+| `repositories/employees.ts` sort direction   | `ASC` or `DESC` | A keyword, not a value. Derived from `sortDir === 'asc'`, so only two strings exist |
+| `repositories/statistics.ts` bucket count    | `10`            | Its type would be ambiguous inside `generate_series` and the bucket arithmetic      |
+| `repositories/statistics.ts` group threshold | `5`             | Same; both are module constants with no path from a request                         |
+
+**The sort column is the one genuinely dangerous case,** because an identifier cannot be parameterised in
+any database driver — an ORM does not solve this either. It is handled by never letting request text near
+it: `sortBy` is validated against a Zod enum at the route, then used as a key into a fixed
+`Record<EmployeeSortField, SQL>` map. An unrecognised value is a 400 before it reaches the repository, and
+even if it did, an object lookup on an unknown key yields `undefined` rather than a fragment of SQL.
+
+**`LIKE` wildcards are escaped separately.** They are not an injection — the value is bound — but `%` in a
+search box would otherwise match everything and `_` would match any character. `escapeLikeWildcards`
+backslash-escapes `\`, `%` and `_` so a search for "50%" finds the text "50%".
+
+**Proved, not argued.** `npm run verify:injection` builds every raw statement with ten hostile payloads
+across all three access scopes, then asks the dialect for the SQL text and the bound parameters
+_separately_ and asserts that no payload — and no dangerous fragment of one — appears in the text. It
+finishes by firing the payloads at a real database and confirming the row counts are unchanged. **45/45
+checks pass.** Reading the code and reasoning about it is a different and weaker check, because it is the
+interpolation nobody noticed that gets you.
+
+The same ground is covered from the outside by the test suite: a `sortBy` containing SQL is rejected with
+a 400, and a search for `'; DROP TABLE employees; --` returns an ordinary empty result.
+
+## One statement for the whole dashboard
+
+Nine figures — headcount, payroll, mean, median, both quartiles, three group breakdowns and a ten-bucket
+histogram — come back in one row of JSON, assembled with `json_agg` over a single materialised `pay` CTE.
+
+**Why:** five queries would be five scans over the same 10,000 rows and five copies of the filters to keep
+in step. One of them eventually disagrees with the others, and a dashboard whose parts do not add up is
+worse than no dashboard. As it stands the department, country and level totals each sum exactly to the
+company total, and that is checked rather than hoped for.
+
+**Cost:** it is a long statement, and a long statement is harder to read than five short ones. Mitigated by
+building it in named CTEs that each do one thing, and by `buildStatisticsQuery` being separable from
+execution so it can be inspected without a database.
+
+**Empty groups return null, not zero.** A median over nobody is not `$0`; `$0` is a plausible-looking
+figure that is entirely made up, and it is exactly the kind of number that gets quoted. Groups below five
+people have their median withheld for the same reason — the middle of four salaries is those salaries with
+one step of arithmetic in front.
+
+## Pay changes are appended, never edited
+
+Recording a raise inserts a row. Nothing updates or deletes, which is what makes the table an audit trail
+as well as a history.
+
+**Consequences worth stating.** A wrong figure cannot be tidied away — only corrected by another record,
+with both visible for good. So validation happens before the write rather than after: the amount is parsed
+into whole minor units and refused if it is not an exact two-decimal figure, a start date before the hire
+date is rejected, and an identical record on the same day is refused as a probable double submission. The
+UI shows the change and its percentage before the button is pressed for the same reason.
+
+**Amounts travel as strings.** JSON numbers are doubles, so `85000.1` arrives as `85000.099999999999` and
+a client cannot express an exact amount even when it has one. The digits are sent as text and parsed with
+integer arithmetic; `parseFloat` is banned by lint in both repositories.
+
+**A future date is allowed and does not take effect early.** Signing off a January raise in August is
+ordinary. It appears in the history marked as scheduled, because hiding it until it starts is how the same
+raise gets awarded twice.
+
+## Adding an employee: two tables, one decision
+
+Creating a person and recording their first salary are separate tables and one act. They are written in a
+transaction, because a failure between them leaves somebody hired with no pay and nobody aware of it —
+and the fix is a salary backdated by however long it took to notice.
+
+The starting salary is optional and nested rather than flattened. A record is often created before an
+offer is signed off, and an invented figure is worse than a gap: the list shows "not recorded", which is
+true, where `$0` would be a salary and would drag down every average taken from what is on screen.
+
+Three references are checked before the insert rather than left to the foreign keys. A constraint
+violation is a 500 with a message written for whoever is on call; a check up front is a 400 that names the
+field, which is what somebody looking at a stale dropdown needs. The check is one statement with three
+`EXISTS` subqueries, because they are three questions about three tables and there is no reason to pay
+three round trips.
+
+The email is lower-cased once, in the service, because the unique index is on `lower(email)`. Storing what
+was typed and searching for something else is how a duplicate gets in.
+
+## Payroll over time is not a forecast
+
+The dashboard draws payroll for a year back and six months forward. The forward half is drawn differently
+— dashed, in a second colour, past a marked boundary — because it is a different kind of number, and the
+distinction has to survive somebody glancing at it.
+
+It is not a projection. Every month after today is the same arithmetic applied to pay changes that have
+**already been signed off** and carry a future date. A promotion agreed in August that starts in October
+is a cost the company has taken on; it appears on no other screen, and the figure for it is the one thing
+on the dashboard nothing else in the product will tell you. Guessing at attrition or at next year's review
+budget would be a forecast, and this deliberately does not make one.
+
+**One pass, not one per month.** The obvious shape is a lateral "salary in force" lookup per employee per
+month, which at nineteen months and ten thousand people is 190,000 index lookups. Instead `lead()` over
+each person's own records gives every salary the window it applies to, and a month matches the one window
+that contains it — a single scan of the salary history whatever range is asked for. The same-day tie-break
+falls out of ordering the window by `(effective_from, id)`, so "the latest record" means what it means
+everywhere else.
+
+**What it cannot show, and says so.** A leaver appears in no month at all. The record says somebody has
+left but not when, so they cannot be placed back into the months they worked — and counting them in every
+month would be worse than counting them in none. A leave date is the schema change that would fix it.
 
 ## Access control lives at the data layer
 
@@ -149,7 +262,7 @@ of randomness and is looked up by hash on every refresh, so the hash has to be d
 nothing to brute-force.
 
 **Rotation records why a token was revoked.** Replaying a token that was already rotated means two
-parties hold it, so every session for that account ends. Replaying one that was *logged out* is ordinary
+parties hold it, so every session for that account ends. Replaying one that was _logged out_ is ordinary
 — a background tab retrying after another tab signed out — and must not sign the person out elsewhere.
 Without the distinction, closing a laptop tab signs you out of your phone.
 

@@ -32,17 +32,23 @@ Each figure is a single run including planning time, via `psql \timing`.
 Round trips from `curl` against the running API on the same machine, so these include HTTP, JSON and
 process time — not just the query.
 
-| Request                                                | Time    |
-| ------------------------------------------------------ | ------- |
-| `GET /api/lookups`, cached                             | 0.9 ms  |
-| `GET /api/employees` as an Employee (1 person)         | 2 ms    |
-| `GET /api/employees` as a Manager (84 people)          | 5 ms    |
-| `GET /api/employees` filtered to one department        | 11 ms   |
-| `GET /api/lookups`, cold                               | 11 ms   |
-| `GET /api/employees` as of a past date                 | 41 ms   |
-| `GET /api/employees` sorted by converted salary        | 51 ms   |
-| `GET /api/employees` page 400 of 400                   | 54 ms   |
-| `POST /api/auth/login` (argon2id, or its decoy)        | 28 ms   |
+| Request                                           | Time   |
+| ------------------------------------------------- | ------ |
+| `GET /api/lookups`, cached                        | 0.9 ms |
+| `GET /api/employees` as an Employee (1 person)    | 2 ms   |
+| `GET /api/employees` as a Manager (84 people)     | 5 ms   |
+| `GET /api/employees` filtered to one department   | 11 ms  |
+| `GET /api/lookups`, cold                          | 11 ms  |
+| `GET /api/employees` as of a past date            | 41 ms  |
+| `GET /api/employees` sorted by converted salary   | 51 ms  |
+| `GET /api/employees` page 400 of 400              | 54 ms  |
+| `POST /api/auth/login` (argon2id, or its decoy)   | 28 ms  |
+| `GET /api/employees/:id` with full pay history    | 7 ms   |
+| `GET /api/employees/:id` as of a past date        | 5 ms   |
+| `GET /api/stats/overview`, one department         | 25 ms  |
+| `GET /api/stats/overview` as of a past date       | 54 ms  |
+| `GET /api/stats/overview`, everyone incl. leavers | 59 ms  |
+| `GET /api/stats/overview`, whole company          | 64 ms  |
 
 Walking all 400 pages returned 10,000 people, 10,000 of them distinct: nobody repeated, nobody missed.
 
@@ -56,10 +62,36 @@ computed column.
 The cheap scoped queries above make the same point from the other side: a Manager's page costs 5 ms
 because the scope is a condition inside the query, so the work is proportional to what they may see.
 
+**The whole dashboard is one query, and that is why it costs 64 ms.** Nine separate figures — headcount,
+payroll, mean, median, both quartiles, three group breakdowns and a ten-bucket histogram — come back in a
+single row of JSON. Written as five queries it would be five scans and five copies of the filters to keep
+in step; written as one, the `pay` CTE is materialised once and every aggregate reads it. The 64 ms is
+almost entirely that one pass resolving 9,769 current salaries.
+
+Every part of it reconciles, which is the check worth having: the department, country and level totals
+each sum _exactly_ to the company total, and the histogram counts sum to the paid headcount. Filtering to
+one department costs 25 ms, so the cost really is proportional to the rows scanned rather than fixed.
+
 **A correction worth recording:** an earlier draft of the design notes claimed every statistic runs "in
 under 20 ms". Measured, three of the six are between 20 and 30 ms. The conclusion is unchanged — none of
 these is close to needing a cache — but the number was asserted before it was measured, and the measured
 range is 2–30 ms.
+
+## The trend is the slowest thing here, and why
+
+Every other figure is a question about one moment: the salary in force on a date, for the people who
+match a filter. The trend asks the same question nineteen times over, and the naive shape of it — a
+lateral "salary in force" lookup per employee per month — is 190,000 index lookups.
+
+It is one pass instead. `lead()` over each person's own records gives every salary the window it applies
+to, and a month matches the one window containing it. That is a single scan of 23,000 compensation rows
+however many months are asked for, which is why the 61-month version is only twice the 19-month one
+rather than three times.
+
+89 ms is still the slowest endpoint in the product, and it is the one most worth caching if it becomes a
+problem — it changes only when a pay record is written, unlike the overview, which changes with every
+filter. It is not cached yet for the reason nothing else is: at this size, correctness the moment after a
+raise is worth more than 89 ms.
 
 ## What the numbers say
 

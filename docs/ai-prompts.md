@@ -18,6 +18,20 @@ writing code.
 
 ## Where its output was wrong or needed cutting
 
+- **A histogram axis that stopped short of the data.** Each bar was labelled with the value its band
+  began at, centred underneath it. On a chart whose highest salary was $319,845 the last label read
+  $289K, so the top of the range appeared nowhere and the axis looked like it was missing a bar. The
+  labels now mark the band edges, with the closing bound at the end. Found by looking at the screen, not
+  by a test — the numbers were all correct.
+- **A forecast that would have been invented.** "Payroll forecasting" pulled towards fitting a trend line
+  and projecting it. What the data actually supports is the sum of pay changes already signed off with a
+  future date — a real commitment, and a figure that appears on no other screen. The endpoint reports
+  that and nothing else, and the chart draws it differently so the two are never confused.
+- **A chart given the whole width of a monitor.** A fixed-aspect SVG at `w-full` on a 1900-pixel screen
+  is 600 pixels tall and says exactly what it said at 300. The dashboard is one grid now, two thirds and
+  one third, so the extra width carries more information rather than a bigger picture of the same
+  information.
+
 - **The first design was over-built.** A USD amount stored on every salary row, a
   `current_compensation_id` pointer kept alongside the history, seed-on-boot with a persistent volume,
   and a full component test suite. All cut. The stored USD amount and the pointer were the same mistake
@@ -52,6 +66,31 @@ All three are now tests.
 
 Notes are added here only where the output needed correcting or an exchange changed the design.
 
+**Steps 9–10 — a 500 where a 400 belonged.** Found by firing bad input at the running endpoint rather
+than by the suite, which had been written around amounts that were already valid. `parseAmountToMinor`
+throws `TypeError` and `RangeError`, and the error handler correctly treats both as bugs — so posting
+`170,000.00` or three decimal places produced "Something went wrong. Please try again." and a stack trace
+in the log. Those are not bugs; they are somebody mistyping a salary, and the parser's own messages
+("has more than two decimal places") are written to be read. The service now converts them into a 400
+carrying that message. Twelve rejected-input cases are pinned as tests.
+
+**Step 10 — writing the injection check found the bug in the injection check.** The first run reported
+four failures. All four were mine: the payload `_` is a single underscore, which occurs naturally in
+`full_name` and `amount_minor`, so a substring search for it finds the schema rather than a leak; and the
+regex reading back the sort direction was anchored on `ORDER BY`, which matched the lateral join's own
+`ORDER BY … DESC` earlier in the statement and would have reported the wrong direction while looking
+entirely correct. Both are fixed, and the checker now looks for a quoted literal — the form an inlined
+value would actually take — rather than a bare substring. It is worth recording because a verification
+script that passes for the wrong reason is worse than none.
+
+**Step 7 — a plan followed is not a plan obeyed.** The plan chose Material UI partly for its data grid and
+its charts. Neither was used in the end. The grid's value is client-side state, sorting and virtualisation,
+and this table has none of those — the server owns paging and the URL owns state, so the grid would have
+been a large dependency to fight. The charts are two shapes, horizontal bars and a histogram, both of which
+are a `<rect>` with a computed width; hand-rolling them kept the no-inline-styles rule intact and let each
+chart be a real `<table>` underneath, which is better for a screen reader than any charting library
+manages. Both are deviations from the plan and are recorded as such rather than quietly made.
+
 **Step 4 — two problems the tests would not have found.** Both came from running the finished endpoints
 against real Postgres and reading the server's own log, not from the suite.
 
@@ -66,6 +105,12 @@ The second was structural. `src/config.test.ts` and the other colocated tests sa
 missing Jest types. Nobody had run `build` yet. Tests now all live under `tests/`, mirroring `src/`, and
 the build excludes `*.test.ts` as well, so a test file that strays back into `src/` fails the build
 instead of shipping.
+
+**Adding an employee, and the transaction that was nearly missed.** The first version inserted the
+record, then the first salary, as two statements. A failure between them leaves somebody hired with no
+pay and nobody aware of it — the kind of half-write that is only ever found months later, when a payroll
+total is short. Both are in one transaction, and there is a test that a rejected create leaves nothing
+behind.
 
 **Step 3 — verifying against real Postgres.** The suite runs on PGlite, so several claims about the `pg`
 driver were untested for two steps. Running the real path found none of them wrong, but the exercise

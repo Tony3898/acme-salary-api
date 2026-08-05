@@ -51,21 +51,55 @@ node -e "console.log(require('crypto').randomBytes(48).toString('base64url'))"
 
 ## API
 
-| Endpoint                 | Purpose                                                             |
-| ------------------------ | ------------------------------------------------------------------- |
-| `POST /api/auth/login`    | Email and password in, access token in the body, refresh token in an httpOnly cookie |
-| `POST /api/auth/refresh`  | Exchanges the cookie for a new pair; the old refresh token stops working |
-| `POST /api/auth/logout`   | Ends the session server-side and clears the cookie                   |
-| `GET  /api/auth/me`       | The signed-in account, re-read from the database                     |
-| `GET  /api/employees`     | One page of employees with their pay, scoped to what the caller may see |
-| `GET  /api/lookups`       | Departments, levels, countries, exchange rates, pay bands — cached   |
-| `GET  /health`            | Unauthenticated, touches no database                                 |
+| Endpoint                               | Purpose                                                                              |
+| -------------------------------------- | ------------------------------------------------------------------------------------ |
+| `POST /api/auth/login`                 | Email and password in, access token in the body, refresh token in an httpOnly cookie |
+| `POST /api/auth/refresh`               | Exchanges the cookie for a new pair; the old refresh token stops working             |
+| `POST /api/auth/logout`                | Ends the session server-side and clears the cookie                                   |
+| `GET  /api/auth/me`                    | The signed-in account, re-read from the database                                     |
+| `GET  /api/employees`                  | One page of employees with their pay, scoped to what the caller may see              |
+| `POST /api/employees`                  | Adds an employee, with an optional starting salary. **HR Admin only**                |
+| `GET  /api/employees/:id`              | One person with their whole pay history and what each change was worth               |
+| `POST /api/employees/:id/compensation` | Records a new salary. **HR Admin only**; appends, never edits                        |
+| `GET  /api/stats/overview`             | Headcount, payroll, quartiles, three breakdowns and a histogram. **HR roles only**   |
+| `GET  /api/stats/payroll-trend`        | Payroll month by month, plus the months already committed. **HR roles only**         |
+| `GET  /api/lookups`                    | Departments, levels, countries, exchange rates, pay bands — cached                   |
+| `GET  /health`                         | Unauthenticated, touches no database                                                 |
+
+`POST /api/employees` takes the record and, optionally, `startingPay`. The salary is nested and optional
+because a record is often created before an offer is signed off: left out, the person appears with no pay
+recorded rather than with an invented figure. Both halves are written in one transaction, so a failure
+cannot leave somebody hired with no salary. The address is stored lower-cased and has to be unique
+case-insensitively — two people differing only in capitalisation is an ambiguity, and the address is how a
+person is found. It is not the bulk path: that is the CSV import.
+
+`GET /api/stats/payroll-trend` takes `historyMonths` (up to 36) and `horizonMonths` (up to 24, and `0`
+for history alone), both clamped rather than refused. Months up to today are `ACTUAL`; months after it are
+`COMMITTED` — **not a forecast**, but the same arithmetic over pay changes that have already been signed
+off and carry a future date. A promotion agreed in August that starts in October is a cost the company has
+taken on, and it is invisible on every other screen. Nothing here guesses at attrition or at next year's
+review budget. Leavers are counted in no month, because the record says somebody has left but not when.
 
 `GET /api/employees` takes `page`, `pageSize` (25/50/100), `sortBy`
 (name/salary/hireDate/country/department/level/status), `sortDir`, `q`, `country`, `departmentId`,
 `jobLevelId`, `status` and `asOf`. Sorting by salary sorts on the amount converted to USD, because
 ₹2,000,000 is a bigger number than $150,000 and a smaller salary. `asOf` reports pay as it stood on that
 date. Anything not on those lists is refused rather than ignored.
+
+`GET /api/employees/:id` answers **404 for a record outside the caller's access scope**, identically to
+one that does not exist. A 403 would confirm the record is there, which is enough to walk the ids and map
+the company from an account that can see 84 people.
+
+`POST /api/employees/:id/compensation` takes `amount`, `currency`, `effectiveFrom` and an optional
+`reason`. **`amount` is a string**, not a JSON number: JSON numbers are doubles, so `85000.1` arrives as
+`85000.099999999999` and a client could not express an exact amount even when it had one. A future
+`effectiveFrom` schedules the change; a past one corrects the record; an identical record on the same day
+is refused as a probable double submission, because the table is append-only and has no undo.
+
+`GET /api/stats/overview` takes `asOf`, `status` (ACTIVE/LEFT/ALL, default ACTIVE), `country`,
+`departmentId` and `jobLevelId`. Managers and Employees get a 403 rather than figures narrowed to their
+team: a median over three people is those three salaries with one step of arithmetic in front. Empty
+groups report `null`, never `0`, and a group of fewer than five has its median withheld.
 
 Failures share one shape — `{ "error": { "code", "message" } }`, with `details` added for validation —
 so the client parses one thing. A failed login answers identically whether the email is unknown or the
@@ -97,7 +131,16 @@ npm test                      # Jest, against an in-process Postgres (PGlite)
 npm run test:coverage         # 80% minimum, enforced
 npm run typecheck             # separate step — the test compiler skips types
 npm run lint
+npm run verify:pg             # driver behaviour the in-process Postgres cannot show
+npm run verify:injection      # every raw statement, built with hostile input
 ```
+
+`verify:injection` exists because this codebase writes raw SQL on purpose, and that choice has to be paid
+for with evidence rather than confidence. It builds each statement with ten hostile payloads across all
+three access scopes, asks the dialect for the SQL text and the bound parameters _separately_, and asserts
+that no payload — and no dangerous fragment of one — reached the text. It then fires them at a real
+database and confirms the row counts are unchanged. See
+[design-notes.md](docs/design-notes.md#sql-injection-parameterised-and-proved-rather-than-asserted).
 
 ## Layout
 
