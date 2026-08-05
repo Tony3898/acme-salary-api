@@ -59,6 +59,79 @@ export class PersistentStack extends Stack {
     );
 
     /**
+     * Deep links, done at the edge rather than with a custom error response.
+     *
+     * The app owns its routes, so S3 having no `/employees/42` object is normal. The
+     * obvious fix is a 403/404 error response pointing at `/index.html` — and that was
+     * the first version of this — but CloudFront applies error responses to the whole
+     * distribution, not per behaviour. Once the API shares the distribution that turns
+     * every "employee not found" into an HTML page with status 200, which the client
+     * cannot tell from success.
+     *
+     * A viewer-request function attaches to one behaviour, so the API never sees it.
+     * A missing `/assets/index-D4h2k.js` also keeps returning 404 instead of HTML,
+     * which is the difference between a clear error and `Unexpected token '<'`.
+     */
+    const spaRoutes = new cloudfront.Function(this, 'SpaRoutes', {
+      functionName: `${name.PROJECT}-spa-routes`,
+      comment: 'Serve index.html for app routes; leave files and /api alone.',
+      runtime: cloudfront.FunctionRuntime.JS_2_0,
+      code: cloudfront.FunctionCode.fromInline(`
+function handler(event) {
+  var uri = event.request.uri;
+  // A dot in the last segment means a file. Every route this app has is dot-free.
+  if (uri.substring(uri.lastIndexOf('/') + 1).indexOf('.') === -1) {
+    event.request.uri = '/index.html';
+  }
+  return event.request;
+}
+      `),
+    });
+
+    /**
+     * One origin object, reused.
+     *
+     * Calling `withOriginAccessControl(site)` per behaviour looks equivalent and is not:
+     * CloudFront deduplicates origins by object identity, so the first version of this
+     * built two identical S3 origins and two access-control policies for one bucket.
+     */
+    const siteOrigin = origins.S3BucketOrigin.withOriginAccessControl(site);
+
+    /**
+     * The API, reached through the same distribution as the app.
+     *
+     * HTTPS to the origin, not HTTP: the hop from an edge location to Mumbai crosses the
+     * public internet, and every request on it carries a bearer token. Caddy holds a
+     * Let's Encrypt certificate for this name, which is the only reason the name exists.
+     */
+    const apiOrigin = new origins.HttpOrigin(name.API_ORIGIN_DOMAIN, {
+      protocolPolicy: cloudfront.OriginProtocolPolicy.HTTPS_ONLY,
+      originSslProtocols: [cloudfront.OriginSslPolicy.TLS_V1_2],
+      readTimeout: Duration.seconds(60), // the CSV export streams 10,000 rows
+    });
+
+    /**
+     * Nothing about an API response is cacheable here.
+     *
+     * Every route is permission-filtered, so the same URL returns different data per
+     * user — an edge cache would eventually hand one person another's view. Disabled at
+     * the policy rather than trusted to `Cache-Control` headers, because the failure is
+     * silent and the blast radius is salaries.
+     *
+     * The origin request policy forwards everything except `Host`. `Authorization` and
+     * the refresh cookie are the two that matter; `Host` is excluded because Caddy
+     * matches its certificate on it and would otherwise be handed the CloudFront name.
+     */
+    const apiBehavior: cloudfront.BehaviorOptions = {
+      origin: apiOrigin,
+      viewerProtocolPolicy: cloudfront.ViewerProtocolPolicy.REDIRECT_TO_HTTPS,
+      allowedMethods: cloudfront.AllowedMethods.ALLOW_ALL,
+      cachePolicy: cloudfront.CachePolicy.CACHING_DISABLED,
+      originRequestPolicy: cloudfront.OriginRequestPolicy.ALL_VIEWER_EXCEPT_HOST_HEADER,
+      compress: true,
+    };
+
+    /**
      * Two cache behaviours, because Vite fingerprints everything except one file.
      *
      * `/assets/*` is content-addressed — `index-D4h2k.js` never changes meaning — so it
@@ -77,44 +150,29 @@ export class PersistentStack extends Stack {
       priceClass: cloudfront.PriceClass.PRICE_CLASS_ALL,
       minimumProtocolVersion: cloudfront.SecurityPolicyProtocol.TLS_V1_2_2021,
       defaultBehavior: {
-        origin: origins.S3BucketOrigin.withOriginAccessControl(site),
+        origin: siteOrigin,
         viewerProtocolPolicy: cloudfront.ViewerProtocolPolicy.REDIRECT_TO_HTTPS,
         allowedMethods: cloudfront.AllowedMethods.ALLOW_GET_HEAD,
         cachePolicy: cloudfront.CachePolicy.CACHING_OPTIMIZED,
         compress: true,
         responseHeadersPolicy: cloudfront.ResponseHeadersPolicy.SECURITY_HEADERS,
+        functionAssociations: [
+          { function: spaRoutes, eventType: cloudfront.FunctionEventType.VIEWER_REQUEST },
+        ],
       },
       additionalBehaviors: {
         '/index.html': {
-          origin: origins.S3BucketOrigin.withOriginAccessControl(site),
+          origin: siteOrigin,
           viewerProtocolPolicy: cloudfront.ViewerProtocolPolicy.REDIRECT_TO_HTTPS,
           allowedMethods: cloudfront.AllowedMethods.ALLOW_GET_HEAD,
           cachePolicy: cloudfront.CachePolicy.CACHING_DISABLED,
           compress: true,
           responseHeadersPolicy: cloudfront.ResponseHeadersPolicy.SECURITY_HEADERS,
         },
+        ...Object.fromEntries(name.API_PATHS.map((path) => [path, apiBehavior])),
       },
-      /**
-       * The app owns its routes, so S3 not having a `/employees/42` object is normal
-       * rather than an error. Without this, every deep link and every refresh away from
-       * the root returns the origin's 403 instead of loading the app.
-       *
-       * TTL zero: a 403 that got cached would outlive the deploy that fixed it.
-       */
-      errorResponses: [
-        {
-          httpStatus: 403,
-          responseHttpStatus: 200,
-          responsePagePath: '/index.html',
-          ttl: Duration.seconds(0),
-        },
-        {
-          httpStatus: 404,
-          responseHttpStatus: 200,
-          responsePagePath: '/index.html',
-          ttl: Duration.seconds(0),
-        },
-      ],
+      // No errorResponses: they are distribution-wide, and the API shares this
+      // distribution. Deep links are handled by the viewer function above instead.
     });
     this.distributionId = distribution.distributionId;
 

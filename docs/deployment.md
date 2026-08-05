@@ -1,26 +1,56 @@
 # Deployment
 
-Two URLs, two stacks, one CDK app in [infra/](../infra).
+One URL, two stacks, one CDK app in [infra/](../infra).
 
-|     | Where                         | Costs                                      |
-| --- | ----------------------------- | ------------------------------------------ |
-| UI  | https://acme.tejasrana.in     | ~$0.50/mo                                  |
-| API | https://acme-api.tejasrana.in | ~$5/mo, and deletes itself after two weeks |
+|     | Where                             | Costs                                      |
+| --- | --------------------------------- | ------------------------------------------ |
+| UI  | https://acme.tejasrana.in         | ~$0.50/mo                                  |
+| API | https://acme.tejasrana.in/**api** | ~$5/mo, and deletes itself after two weeks |
 
 ```
-                    ┌─ acme.tejasrana.in ──────────────────────────────┐
-browser ──TLS──────►│ CloudFront ──OAC──► S3 (private)                 │  persistent stack
-                    └──────────────────────────────────────────────────┘
-                    ┌─ acme-api.tejasrana.in ──────────────────────────┐
-        ──TLS──────►│ VPC 10.20.0.0/16, 2 AZs                         │  compute stack
-                    │  public subnet                                   │
-                    │   └─ EC2 t4g.micro  SG: 80, 443. no 22.          │
-                    │       ├─ caddy    :443  Let's Encrypt            │
-                    │       ├─ api      :3000  not published           │
-                    │       └─ postgres :5432  not published           │
-                    │  isolated subnets — no route to the IGW          │
-                    └──────────────────────────────────────────────────┘
+                 ┌─ acme.tejasrana.in ─────────────────────────────────┐
+                 │ CloudFront                                          │
+browser ──TLS───►│   /api/*, /health ──┐        default ──OAC──► S3    │ persistent
+                 │                     │                     (private) │
+                 └─────────────────────┼───────────────────────────────┘
+                                       │ TLS, origin-facing IPs only
+                 ┌─ acme-api…  (origin, not a public URL) ─────────────┐
+                 │ VPC 10.20.0.0/16, 2 AZs                             │
+                 │  public subnet                                      │
+                 │   └─ EC2 t4g.micro   SG: 443 CloudFront, 80 ACME    │ compute
+                 │       ├─ caddy    :443  Let's Encrypt               │
+                 │       ├─ api      :3000  not published              │
+                 │       └─ postgres :5432  not published              │
+                 │  isolated subnets — no route to the IGW             │
+                 └─────────────────────────────────────────────────────┘
 ```
+
+## Why the API is a path and not a subdomain
+
+It was `acme-api.tejasrana.in` first, and moving it behind `/api` on the same distribution
+removed three things rather than adding one.
+
+**No CORS.** Same origin means no preflight before each mutating call, no exact-origin allow-list
+to keep in step with the deployed hostname, and no `credentials: true` subtleties. The middleware
+is still configured, because local development still crosses origins, but in production the browser
+never asks.
+
+**A first-party refresh cookie.** Cross-site cookies need `SameSite=None`, which browsers are
+progressively restricting and some block outright. On one origin the cookie is first-party and the
+question does not arise.
+
+**One certificate and one name to hand out.** The instance keeps a hostname because CloudFront will
+not speak HTTPS to an origin whose certificate does not match it, but nothing points at it.
+
+The cost is one shared distribution, and it is a real one: CloudFront's custom error responses are
+distribution-wide. The 403/404 → `index.html` rules that made deep links work would have turned
+every "employee not found" into an HTML page with status 200. Deep links are a viewer-request
+function on the S3 behaviour instead, which is scoped to one behaviour and leaves the API alone.
+
+**No load balancer.** An ALB is ~$16/month before traffic, against ~$7 for everything here
+combined, and it buys nothing at one instance: CloudFront already terminates TLS at the edge, and
+health checks with nothing to fail over to are just a bill. The upgrade path is real, though — a
+second instance is when the origin becomes an ALB and Caddy stops terminating TLS.
 
 ## Why it is split in two
 
@@ -85,6 +115,18 @@ later is the awkward version of this change. The database security group is crea
 rule (5432 from the server's security group, no CIDR ranges) so the intent is written down rather than
 reconstructed from a diagram in six months.
 
+**The instance answers only CloudFront, and the rate limiter depends on it.** Port 443 admits the
+`com.amazonaws.global.cloudfront.origin-facing` prefix list and nothing else. That is a correctness
+requirement, not tidiness. The API rate-limits logins per client address and now reads that address
+from `X-Forwarded-For`, because there are two proxies in front of it. Through CloudFront the header
+is trustworthy: CloudFront overwrites the last entry with the real viewer address whatever the
+client sent, Caddy appends the edge address after it, and the viewer is always second from the
+right — so `TRUST_PROXY_HOPS=2` finds it and anything forged is pushed harmlessly further left.
+Reached directly the chain would be one shorter, and a forged entry would land exactly where the
+viewer's belongs; every login attempt could then claim a fresh address. Closing the direct path is
+what makes the header safe to read at all. Port 80 stays open because Let's Encrypt answers its
+challenge there, and Caddy serves nothing else on it.
+
 **No SSH.** No key pair exists for this instance and port 22 is never opened. Shell access and every
 deploy go through Session Manager, which needs no inbound rule because the agent dials out, and which
 records each command in CloudTrail against the workflow run that sent it. An SSH key in a GitHub secret
@@ -98,11 +140,24 @@ cannot do.
 Manager — the only credentials on the box are in a file that was generated on it.
 
 **No access keys, and the branch is pinned.** The workflows authenticate by OIDC, so there is no
-credential to rotate or to leak with the repository. The trust policy names
-`repo:Tony3898/<repo>:ref:refs/heads/main` for each — the branch matters, because trusting
-`repo:owner/name:*` also matches every tag anybody can push and every pull request from a fork, which is
-the usual way this pattern is got wrong. What that role can _do_ once assumed is the trade-off discussed
-above.
+credential to rotate or to leak with the repository. The trust policy names the branch as well as the
+repository, because trusting `repo:owner/name:*` also matches every tag anybody can push and every pull
+request from a fork, which is the usual way this pattern is got wrong. What that role can _do_ once
+assumed is the trade-off discussed above.
+
+The subject to name is not always the obvious one, which cost several failed runs here. These two
+repositories have GitHub's **OIDC subject customisation** enabled, so the token's `sub` carries immutable
+numeric IDs rather than names:
+
+```
+repo:Tony3898@37872014/acme-salary-api@1324147506:ref:refs/heads/main
+```
+
+not `repo:Tony3898/acme-salary-api:ref:refs/heads/main`. The failure is `AccessDenied` on
+`AssumeRoleWithWebIdentity` rather than `InvalidIdentityToken`, which is the useful clue: the token
+verified fine, only the condition did not match. The trust policy lists both forms, so the setting can be
+turned off at `Settings → Actions → OIDC` without breaking the deploy. Anything guessed here is guessed
+wrong — print the claim from inside a workflow and read it.
 
 **Secrets are generated on the instance and never leave it.** The first deploy writes
 `/opt/acme-salary/.env` with `openssl rand` for both the database password and `JWT_SECRET`, then derives

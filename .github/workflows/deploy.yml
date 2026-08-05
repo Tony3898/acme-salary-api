@@ -142,11 +142,14 @@ jobs:
               echo "POSTGRES_PASSWORD=\$(openssl rand -base64 32 | tr -d '/+=')"
               echo "POSTGRES_DB=acme_salary"
               echo "JWT_SECRET=\$(openssl rand -base64 48 | tr -d '\n')"
+              # Vestigial in production and kept for it: the app and the API are now the
+              # same origin, so the browser sends no cross-origin request to approve.
+              # It still covers local development against a deployed API.
               echo "CORS_ORIGIN=https://acme.tejasrana.in"
-              # One proxy in front of the API: the Caddy container. Getting this wrong
-              # either rate-limits every client as one, or trusts a header the client
-              # can forge.
-              echo "TRUST_PROXY_HOPS=1"
+              # Two proxies in front of the API: CloudFront, then the Caddy container.
+              # Getting this wrong either rate-limits every client behind one edge
+              # location as a single address, or trusts a header a client can forge.
+              echo "TRUST_PROXY_HOPS=2"
               # Only when set. An empty value is not the same as an absent one: the
               # config requires at least 8 characters, so writing the line blank would
               # fail startup, while omitting it falls through to the documented default.
@@ -205,15 +208,16 @@ jobs:
       - name: Check it answers
         run: |
           set -euo pipefail
-          # Against the real domain over HTTPS, so this also proves Caddy got its
-          # certificate and DNS points where it should. Retried: a first-boot
-          # certificate takes a few seconds to issue.
+          # Through CloudFront, which is the only way in and therefore the only path
+          # worth checking: it proves DNS, the distribution's behaviour, the security
+          # group, Caddy's certificate and the container, in one request. Retried,
+          # because a first-boot certificate takes a few seconds to issue.
           for attempt in $(seq 1 20); do
-            if curl -fsS --max-time 10 https://acme-api.tejasrana.in/health | grep -q '"ok"'; then
+            if curl -fsS --max-time 10 https://acme.tejasrana.in/health | grep -q '"ok"'; then
               echo "Healthy after ${attempt} attempt(s)."
               exit 0
             fi
             sleep 15
           done
-          echo "::error::https://acme-api.tejasrana.in/health did not become healthy."
+          echo "::error::https://acme.tejasrana.in/health did not become healthy."
           exit 1

@@ -1,19 +1,35 @@
-# TLS for the API, which exists because the UI is served over HTTPS from CloudFront
-# and a browser will not let an HTTPS page call an HTTP one.
+# TLS for CloudFront's origin requests.
+#
+# Nobody's browser reaches this — the app and the API are both served from
+# acme.tejasrana.in, and the security group admits only CloudFront on 443. This name
+# exists because CloudFront will not speak HTTPS to an origin whose certificate does
+# not match, and that hop crosses the public internet carrying bearer tokens.
 #
 # Caddy rather than nginx plus certbot: naming the domain is the whole configuration,
 # and the certificate is obtained and renewed without a cron job to forget about.
 {$API_DOMAIN} {
 	encode gzip
 
-	reverse_proxy api:3000 {
-		# The API reads the client IP from here to rate-limit logins per address, so
-		# TRUST_PROXY_HOPS is 1 in .env — one proxy, this one. Caddy overwrites rather
-		# than appends, which is what makes the header safe to trust: a client that
-		# sends its own X-Forwarded-For cannot spread its login attempts across
-		# invented addresses.
-		header_up X-Forwarded-For {remote_host}
+	tls {
+		issuer acme {
+			# Let's Encrypt cannot reach port 443 here, so its preferred challenge would
+			# fail and be retried over port 80 on every issue and every renewal. Asking
+			# for HTTP-01 directly skips a guaranteed failure.
+			disable_tlsalpn_challenge
+		}
 	}
+
+	# Appending, not overwriting — which is the opposite of what this said before, and
+	# the change that matters when a second proxy appears in front.
+	#
+	# CloudFront sets the last X-Forwarded-For entry to the real viewer address and it
+	# does so whatever the client sent, so anything a client forges is pushed further
+	# left. Caddy appends the edge address after it, making the chain
+	# `[forged...,] viewer, edge` — always two from the right. TRUST_PROXY_HOPS is 2 to
+	# match. This only holds because the security group makes CloudFront the only way
+	# in: reached directly, the chain would be one shorter and the forged value would
+	# land where the viewer's belongs.
+	reverse_proxy api:3000
 
 	# HSTS. Caddy already redirects HTTP to HTTPS; this stops the first request of the
 	# next visit from being plaintext at all. No `preload`, no `includeSubDomains` —

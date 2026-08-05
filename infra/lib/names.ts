@@ -11,8 +11,33 @@ export const PROJECT = 'acme-salary';
 export const REGION = 'ap-south-1';
 export const ACCOUNT = '651025161973';
 
+/** The only hostname anybody types. CloudFront serves the app and the API from it. */
 export const WEB_DOMAIN = 'acme.tejasrana.in';
-export const API_DOMAIN = 'acme-api.tejasrana.in';
+
+/**
+ * The instance's own hostname, which is CloudFront's origin and not a public URL.
+ *
+ * It still exists because Caddy needs a name to get a Let's Encrypt certificate for,
+ * and CloudFront will not talk HTTPS to an origin whose certificate does not match.
+ * Nothing else should use it: the security group only admits CloudFront, so a browser
+ * pointed here gets a timeout.
+ */
+export const API_ORIGIN_DOMAIN = 'acme-api.tejasrana.in';
+
+/**
+ * Everything CloudFront sends to the instance instead of to S3.
+ *
+ * `/api/*` is every route the Express app mounts; `/health` is the one that sits
+ * outside it. Both are listed rather than merged because moving the health route under
+ * `/api` to save a line here would be infrastructure dictating the app's URLs.
+ */
+export const API_PATHS = ['/api/*', '/health'] as const;
+
+/**
+ * `com.amazonaws.global.cloudfront.origin-facing`, which is the list of addresses
+ * CloudFront makes origin requests from. Region-specific id for ap-south-1.
+ */
+export const CLOUDFRONT_ORIGIN_PREFIX_LIST = 'pl-9aa247f3';
 
 /** tejasrana.in, which already exists and is shared with several other sites. */
 export const HOSTED_ZONE_ID = 'Z10378751GQ7IVOVONCPK';

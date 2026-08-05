@@ -55,7 +55,7 @@ export class ComputeStack extends Stack {
     });
 
     /**
-     * Two ports in, and nothing else.
+     * Two ports in, one of them only from CloudFront.
      *
      * Not 22: there is no key pair, and shell access is Session Manager, which needs no
      * inbound rule because the agent dials out. Not 5432 either — the compose file
@@ -74,8 +74,25 @@ export class ComputeStack extends Stack {
       'Caddy, which redirects to 443 and answers the ACME challenge',
     );
     serverSecurityGroup.addIngressRule(ec2.Peer.anyIpv6(), ec2.Port.tcp(80), 'as above, over IPv6');
-    serverSecurityGroup.addIngressRule(ec2.Peer.anyIpv4(), ec2.Port.tcp(443), 'the API');
-    serverSecurityGroup.addIngressRule(ec2.Peer.anyIpv6(), ec2.Port.tcp(443), 'the API, over IPv6');
+
+    /**
+     * 443 from CloudFront and from nowhere else.
+     *
+     * Not tidiness — correctness. The API rate-limits logins per client address, and it
+     * reads that address from `X-Forwarded-For` because there are now two proxies in
+     * front of it. CloudFront overwrites the last entry with the real viewer, so through
+     * the distribution the header cannot be forged. Reaching the instance directly, it
+     * could be: send your own `X-Forwarded-For` and every login attempt looks like a new
+     * address. Closing the direct path is what makes the header safe to trust at all.
+     *
+     * Port 80 stays open because Let's Encrypt answers its challenge there. Caddy serves
+     * nothing else on it, so there is no API to reach.
+     */
+    serverSecurityGroup.addIngressRule(
+      ec2.Peer.prefixList(name.CLOUDFRONT_ORIGIN_PREFIX_LIST),
+      ec2.Port.tcp(443),
+      'CloudFront origin requests only',
+    );
 
     /**
      * Where a database would go, created now and empty.
@@ -213,7 +230,7 @@ export class ComputeStack extends Stack {
         hostedZoneId: name.HOSTED_ZONE_ID,
         zoneName: name.ZONE_NAME,
       }),
-      recordName: name.API_DOMAIN,
+      recordName: name.API_ORIGIN_DOMAIN,
       /**
        * `cdk synth` warns that this is not a valid IPv4 address, because at synth time it
        * is a CloudFormation token rather than a number. It resolves to the allocated
@@ -274,7 +291,9 @@ export class ComputeStack extends Stack {
       'stop',
     );
 
-    new CfnOutput(this, 'ApiUrl', { value: `https://${name.API_DOMAIN}` });
+    // The public URL, not the origin: nothing outside CloudFront can reach the origin.
+    new CfnOutput(this, 'ApiUrl', { value: `https://${name.WEB_DOMAIN}/api` });
+    new CfnOutput(this, 'OriginHostname', { value: name.API_ORIGIN_DOMAIN });
     new CfnOutput(this, 'InstanceId', { value: server.instanceId });
     new CfnOutput(this, 'PublicIp', { value: address.ref });
     new CfnOutput(this, 'DatabaseSecurityGroupId', {
